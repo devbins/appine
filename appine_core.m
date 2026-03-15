@@ -361,6 +361,10 @@ static void appine_ensure_container(void) {
     
     state.tabBarView = [[NSView alloc] init];
     state.tabControl = [NSSegmentedControl segmentedControlWithLabels:@[] trackingMode:NSSegmentSwitchTrackingSelectOne target:g_action_target action:@selector(tabChanged:)];
+    // 等宽分布
+    if (@available(macOS 10.13, *)) {
+        state.tabControl.segmentDistribution = NSSegmentDistributionFillEqually;
+    }
     [state.tabBarView addSubview:state.tabControl];
     [state.containerView addSubview:state.tabBarView];
     
@@ -417,7 +421,6 @@ static void appine_apply_visual_state(void) {
         }
     }
 }
-
 static void appine_rebuild_tabs(void) {
     AppineState *state = appine_state();
     if (!state.tabControl) return;
@@ -427,7 +430,15 @@ static void appine_rebuild_tabs(void) {
     
     for (NSInteger i = 0; i < (NSInteger)state.tabs.count; i++) {
         AppineTabItem *item = state.tabs[i];
-        [state.tabControl setLabel:(item.backend.title ?: @"Tab") forSegment:i];
+        
+        // 获取标题并进行硬性长度截断（防止单个 Tab 时标题过长）
+        NSString *title = item.backend.title ?: @"Tab";
+        const NSUInteger kMaxTitleLength = 30;
+        if (title.length > kMaxTitleLength) {
+            title = [[title substringToIndex:kMaxTitleLength - 1] stringByAppendingString:@"…"];
+        }
+        
+        [state.tabControl setLabel:title forSegment:i];
         if (item.tabId == state.activeTabId) selectedIdx = i;
     }
     
