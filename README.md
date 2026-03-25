@@ -54,8 +54,7 @@ https://github.com/user-attachments/assets/f63eff4e-754e-4d4f-b11c-aa9d3f982c67
 
 To quickly open links on web pages, I wrote a simple link-hints plugin for Appine's built-in browser. It works similarly to Vimium — pressing `f` will highlight the links on the page, and then pressing the corresponding key will quickly open the link on the current page, or pressing `q` to quit the link hints, as shown below:
 
-https://github.com/user-attachments/assets/2e86d223-0d5f-47a3-9e90-b3d3afa36c78
-
+<img width="3024" height="1898" alt="Image" src="https://github.com/user-attachments/assets/2e86d223-0d5f-47a3-9e90-b3d3afa36c78" />
 
 ### Opening PDFs and Other Documents
 
