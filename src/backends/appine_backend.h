@@ -3,8 +3,8 @@
  * Project: Appine (App in Emacs)
  * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -30,7 +30,19 @@ typedef NS_ENUM(NSInteger, AppineBackendKind) {
     AppineBackendKindWeb,
     AppineBackendKindPDF,
     AppineBackendKindQuickLook,
+    AppineBackendKindRss,
 };
+
+static inline NSBox *appine_create_color_box(NSRect frame, NSColor *fillColor, NSAutoresizingMaskOptions mask) {
+    NSBox *box = [[NSBox alloc] initWithFrame:frame];
+    box.boxType = NSBoxCustom;
+    box.borderWidth = 0.0;
+    box.borderColor = [NSColor clearColor];
+    box.contentViewMargins = NSMakeSize(0, 0);
+    if (fillColor) box.fillColor = fillColor;
+    box.autoresizingMask = mask; // 直接在这里设置布局伸缩属性
+    return box;
+}
 
 @protocol AppineBackend <NSObject>
 

@@ -3,8 +3,8 @@
  * Project: Appine (App in Emacs)
  * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -21,23 +21,34 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #import "appine_backend.h"
+#import "appine_core.h"
 #import <PDFKit/PDFKit.h>
 
-@interface AppinePdfBackend : NSObject <AppineBackend, NSTextFieldDelegate, NSGestureRecognizerDelegate>
+@interface AppinePdfBackend : NSObject <AppineBackend, NSTextFieldDelegate, NSSearchFieldDelegate, NSGestureRecognizerDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTableViewDataSource, NSTableViewDelegate, PDFDocumentDelegate>
+
 
 @property (nonatomic, strong) NSView *containerView;
 @property (nonatomic, strong) PDFView *pdfView;
 @property (nonatomic, copy) NSString *path;
 
-// ---- Find Bar 相关属性 ----
-@property (nonatomic, strong) NSView *findBarView;
-@property (nonatomic, strong) NSTextField *findTextField;
-@property (nonatomic, strong) NSTextField *findStatusLabel;
-@property (nonatomic, assign) BOOL findBarVisible;
-@property (nonatomic, copy) NSString *currentFindString;
+// --- 左侧固定工具栏与侧边栏面板 ---
+@property (nonatomic, strong) NSView *leftToolBar;
+@property (nonatomic, strong) NSButton *searchBtn;
+@property (nonatomic, strong) NSButton *outlineBtn;
 
-// ---- 查找状态 ----
-@property (nonatomic, strong) NSArray<PDFSelection *> *allSelections;
+@property (nonatomic, strong) NSView *sidePanelView;
+@property (nonatomic, assign) NSInteger currentSidePanelMode; // 0: 隐藏, 1: 大纲, 2: 搜索
+
+// ---- Outline 相关属性 ----
+@property (nonatomic, strong) NSScrollView *outlineScrollView;
+@property (nonatomic, strong) NSOutlineView *outlineView;
+
+// ---- search view 相关属性 ----
+@property (nonatomic, strong) NSView *searchPanelView;
+@property (nonatomic, strong) NSSearchField *sideSearchField;
+@property (nonatomic, strong) NSScrollView *searchResultsScrollView;
+@property (nonatomic, strong) NSTableView *searchResultsTableView;
+@property (nonatomic, strong) NSMutableArray<PDFSelection *> *searchResults;
 @property (nonatomic, assign) NSInteger currentMatchIndex;
 
 // ---- highlight/comment
@@ -50,6 +61,7 @@
 
 @property (nonatomic, strong) NSView *saveBarView;
 @property (nonatomic, assign) BOOL isModified;
+@property (nonatomic, assign) BOOL isSavePositionEnabled;
 @property (nonatomic, strong) id eventMonitor;
 @property (nonatomic, strong) id clickMonitor;
 
@@ -67,20 +79,29 @@
     self = [super init];
     if (self) {
         _path = [path copy];
-        _findBarVisible = NO;
-        _currentFindString = @"";
-        _allSelections = @[];
         _currentMatchIndex = -1;
+        _searchResults = [NSMutableArray array];
 
         [self setupUI];
-        [self setupFindBar];
 
         if (_path && _path.length > 0) {
             NSURL *url = [NSURL fileURLWithPath:_path];
             if (url) {
                 PDFDocument *doc = [[PDFDocument alloc] initWithURL:url];
                 if (doc) {
+                    doc.delegate = self;
+                    _isSavePositionEnabled = NO; // 加载期间禁止保存，防止覆盖存档
                     [_pdfView setDocument:doc];
+                    // 如果没有大纲，隐藏 Sidebar 按钮
+                    if (!doc.outlineRoot) {
+                        _outlineBtn.enabled = NO;
+                    } else {
+                        // 默认展开所有大纲节点
+                        [_outlineView reloadData];
+                        [_outlineView expandItem:nil expandChildren:YES];
+                    }
+                    // 恢复上次阅读位置
+                    [self restoreLastPosition];
                 }
             }
         }
@@ -93,8 +114,94 @@
     _containerView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
     _containerView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
-    // 2. 创建 PDFView
-    _pdfView = [[PDFView alloc] initWithFrame:_containerView.bounds];
+    CGFloat toolBarWidth = 40.0;
+    CGFloat sidePanelWidth = 250.0;
+
+    // ================= 左侧固定工具栏 =================
+    _leftToolBar = appine_create_color_box(NSMakeRect(0, 0, toolBarWidth, _containerView.bounds.size.height), [NSColor windowBackgroundColor], NSViewHeightSizable | NSViewMaxXMargin);
+    // 右侧分割线
+    NSBox *border = appine_create_color_box(NSMakeRect(toolBarWidth - 1, 0, 1, _containerView.bounds.size.height), [NSColor separatorColor], NSViewHeightSizable | NSViewMinXMargin);
+
+    [((NSBox *)_leftToolBar).contentView addSubview:border];
+
+    // 搜索按钮 (使用 SF Symbols)
+    _searchBtn = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"magnifyingglass" accessibilityDescription:nil] target:self action:@selector(toggleSearchPanel)];
+    _searchBtn.frame = NSMakeRect(4, _containerView.bounds.size.height - 40, 32, 32);
+    _searchBtn.autoresizingMask = NSViewMinYMargin;
+    _searchBtn.bordered = NO;
+    _searchBtn.contentTintColor = [NSColor labelColor];
+    [((NSBox *)_leftToolBar).contentView addSubview:_searchBtn];
+
+
+    // 大纲按钮 (使用 SF Symbols)
+    _outlineBtn = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"list.bullet" accessibilityDescription:nil] target:self action:@selector(toggleOutlinePanel)];
+    _outlineBtn.frame = NSMakeRect(4, _containerView.bounds.size.height - 80, 32, 32);
+    _outlineBtn.autoresizingMask = NSViewMinYMargin;
+    _outlineBtn.bordered = NO;
+    _outlineBtn.contentTintColor = [NSColor labelColor];
+    [((NSBox *)_leftToolBar).contentView addSubview:_outlineBtn];
+
+
+    [_containerView addSubview:_leftToolBar];
+
+    // ================= 侧边栏面板容器 =================
+    _sidePanelView = [[NSView alloc] initWithFrame:NSMakeRect(toolBarWidth, 0, sidePanelWidth, _containerView.bounds.size.height)];
+    _sidePanelView.autoresizingMask = NSViewHeightSizable | NSViewMaxXMargin;
+    _sidePanelView.hidden = YES;
+
+    NSView *panelBorder = appine_create_color_box(NSMakeRect(sidePanelWidth - 1, 0, 1, _containerView.bounds.size.height), [NSColor separatorColor], NSViewHeightSizable | NSViewMinXMargin);
+
+    [_sidePanelView addSubview:panelBorder];
+
+    [_containerView addSubview:_sidePanelView];
+
+    // --- 大纲视图 ---
+    _outlineScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, sidePanelWidth - 1, _sidePanelView.bounds.size.height)];
+    _outlineScrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _outlineScrollView.hasVerticalScroller = YES;
+    _outlineScrollView.hidden = YES;
+
+    _outlineView = [[NSOutlineView alloc] initWithFrame:_outlineScrollView.bounds];
+    NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"col"];
+    col.width = sidePanelWidth - 20;
+    [_outlineView addTableColumn:col];
+    _outlineView.outlineTableColumn = col;
+    _outlineView.headerView = nil;
+    _outlineView.dataSource = self;
+    _outlineView.delegate = self;
+    _outlineScrollView.documentView = _outlineView;
+    [_sidePanelView addSubview:_outlineScrollView];
+
+    // --- 搜索视图 ---
+    _searchPanelView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, sidePanelWidth - 1, _sidePanelView.bounds.size.height)];
+    _searchPanelView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _searchPanelView.hidden = YES;
+
+    _sideSearchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(10, _searchPanelView.bounds.size.height - 40, sidePanelWidth - 21, 22)];
+    _sideSearchField.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    _sideSearchField.delegate = self;
+    _sideSearchField.placeholderString = @"Search in PDF...";
+    [_searchPanelView addSubview:_sideSearchField];
+
+    _searchResultsScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, sidePanelWidth - 1, _searchPanelView.bounds.size.height - 50)];
+    _searchResultsScrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _searchResultsScrollView.hasVerticalScroller = YES;
+
+    _searchResultsTableView = [[NSTableView alloc] initWithFrame:_searchResultsScrollView.bounds];
+    NSTableColumn *searchCol = [[NSTableColumn alloc] initWithIdentifier:@"searchCol"];
+    searchCol.width = sidePanelWidth - 20;
+    [_searchResultsTableView addTableColumn:searchCol];
+    _searchResultsTableView.headerView = nil;
+    _searchResultsTableView.dataSource = self;
+    _searchResultsTableView.delegate = self;
+    _searchResultsTableView.rowHeight = 60; // 增加行高以显示上下文
+    _searchResultsScrollView.documentView = _searchResultsTableView;
+    [_searchPanelView addSubview:_searchResultsScrollView];
+
+    [_sidePanelView addSubview:_searchPanelView];
+
+    // 2. 创建 PDFView (注意 x 坐标从 toolBarWidth 开始)
+    _pdfView = [[PDFView alloc] initWithFrame:NSMakeRect(toolBarWidth, 0, _containerView.bounds.size.width - toolBarWidth, _containerView.bounds.size.height)];
     [_pdfView setAutoScales:YES];
     [_pdfView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     [_containerView addSubview:_pdfView];
@@ -125,8 +232,12 @@
     }];
 
     // 监听原生右键菜单对 PDF 的修改（捕获 UndoGroup 结束事件）
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(markModified) name:NSUndoManagerDidCloseUndoGroupNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(selectionChanged:) name:PDFViewSelectionChangedNotification object:_pdfView];
 
+    // 监听 PDF 页面滚动，用于同步左侧大纲
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pageChanged:) name:PDFViewPageChangedNotification object:_pdfView];
+    // 监听滚动，防抖保存精确位置
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(pdfViewScrolled:) name:NSScrollViewDidLiveScrollNotification object:[self pdfScrollView]];
     // 监听 Cmd-S 快捷键保存
     // __weak __typeof__(self) weakSelf = self;
     self.eventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent * _Nullable(NSEvent * _Nonnull event) {
@@ -144,230 +255,75 @@
     return YES; // 允许我们的点击手势与 PDFView 的原生手势同时触发
 }
 
+
 // ===========================================================================
-// Find Bar 界面构建与逻辑
+// 融合后的搜索与跳转逻辑 (Cmd+F 触发)
 // ===========================================================================
-- (void)setupFindBar {
-    CGFloat findBarHeight = 32.0;
-    NSRect containerFrame = self.containerView.frame;
-
-    // Find Bar 位于顶部
-    _findBarView = [[NSView alloc] initWithFrame:NSMakeRect(0, containerFrame.size.height - findBarHeight, containerFrame.size.width, findBarHeight)];
-    _findBarView.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    _findBarView.wantsLayer = YES;
-    _findBarView.layer.backgroundColor = [NSColor controlBackgroundColor].CGColor;
-    _findBarView.hidden = YES;
-
-    // 底部分割线
-    NSView *separator = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, containerFrame.size.width, 1)];
-    separator.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
-    separator.wantsLayer = YES;
-    separator.layer.backgroundColor = [NSColor gridColor].CGColor;
-    [_findBarView addSubview:separator];
-
-    // 关闭按钮
-    NSButton *closeBtn = [NSButton buttonWithTitle:@"✕" target:self action:@selector(closeFindBar:)];
-    closeBtn.frame = NSMakeRect(10, 5, 24, 22);
-    closeBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [_findBarView addSubview:closeBtn];
-
-    // 搜索输入框
-    _findTextField = [[NSTextField alloc] initWithFrame:NSMakeRect(40, 5, 200, 22)];
-    _findTextField.placeholderString = @"Find in document...";
-    _findTextField.delegate = self;
-    _findTextField.target = self;
-    _findTextField.action = @selector(findTextFieldAction:);
-    _findTextField.focusRingType = NSFocusRingTypeNone;
-    [_findBarView addSubview:_findTextField];
-
-    // 状态标签
-    _findStatusLabel = [NSTextField labelWithString:@""];
-    _findStatusLabel.frame = NSMakeRect(250, 5, 80, 22);
-    _findStatusLabel.textColor = [NSColor secondaryLabelColor];
-    [_findBarView addSubview:_findStatusLabel];
-
-    // 上一个按钮
-    NSButton *prevBtn = [NSButton buttonWithTitle:@"▲" target:self action:@selector(findPrevious:)];
-    prevBtn.frame = NSMakeRect(340, 4, 28, 24);
-    prevBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [_findBarView addSubview:prevBtn];
-
-    // 下一个按钮
-    NSButton *nextBtn = [NSButton buttonWithTitle:@"▼" target:self action:@selector(findNext:)];
-    nextBtn.frame = NSMakeRect(370, 4, 28, 24);
-    nextBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [_findBarView addSubview:nextBtn];
-
-    [self.containerView addSubview:_findBarView];
-}
 
 - (void)toggleFindBar {
-    if (self.findBarVisible) {
-        [self closeFindBar:nil];
-    } else {
-        [self showFindBar];
+    // 拦截 Cmd+F，直接打开侧边栏搜索
+    if (self.currentSidePanelMode != 2) {
+        self.currentSidePanelMode = 2;
+        [self updateLayoutForSidePanel];
     }
-}
-
-- (void)showFindBar {
-    if (self.findBarVisible) {
-        [self.findTextField.window makeFirstResponder:self.findTextField];
-        return;
-    }
-
-    self.findBarVisible = YES;
-    self.findBarView.hidden = NO;
-
-    // 动态压缩 PDFView 的高度，腾出 Find Bar 的空间
-    CGFloat findBarHeight = 32.0;
-    NSRect pdfFrame = self.pdfView.frame;
-    pdfFrame.size.height -= findBarHeight;
-    self.pdfView.frame = pdfFrame;
-
-    [self.findTextField.window makeFirstResponder:self.findTextField];
-    if (self.findTextField.stringValue.length > 0) {
-        [self.findTextField selectText:nil];
-    }
-}
-
-- (void)closeFindBar:(id)sender {
-    if (!self.findBarVisible) return;
-
-    self.findBarVisible = NO;
-    self.findBarView.hidden = YES;
-
-    CGFloat findBarHeight = 32.0;
-    NSRect pdfFrame = self.pdfView.frame;
-    pdfFrame.size.height += findBarHeight;
-    self.pdfView.frame = pdfFrame;
-
-    // 清除状态与高亮
-    self.pdfView.highlightedSelections = nil;
-    self.allSelections = @[];
-    self.currentMatchIndex = -1;
-    self.findStatusLabel.stringValue = @"";
-    self.currentFindString = @"";
-
-    [self.pdfView.window makeFirstResponder:self.pdfView];
-}
-
-// ===========================================================================
-// 查找核心逻辑
-// ===========================================================================
-- (void)performFindWithString:(NSString *)string backwards:(BOOL)backwards {
-    if (!string || string.length == 0) {
-        self.currentFindString = @"";
-        self.findStatusLabel.stringValue = @"";
-        self.pdfView.highlightedSelections = nil;
-        self.allSelections = @[];
-        self.currentMatchIndex = -1;
-        return;
-    }
-
-    BOOL stringChanged = ![string isEqualToString:self.currentFindString];
-
-    if (stringChanged) {
-        self.currentFindString = string;
-
-        if (self.pdfView.document) {
-            // 同步查找整个文档中的所有匹配项
-            NSArray<PDFSelection *> *selections = [self.pdfView.document findString:string withOptions:NSCaseInsensitiveSearch];
-            self.allSelections = selections ?: @[];
-
-            if (self.allSelections.count > 0) {
-                self.currentMatchIndex = backwards ? (self.allSelections.count - 1) : 0;
-            } else {
-                self.currentMatchIndex = -1;
-            }
-        }
-    } else {
-        // 搜索词未变，仅在匹配项中循环跳转
-        if (self.allSelections.count > 0) {
-            if (backwards) {
-                self.currentMatchIndex = (self.currentMatchIndex <= 0) ? (self.allSelections.count - 1) : (self.currentMatchIndex - 1);
-            } else {
-                self.currentMatchIndex = (self.currentMatchIndex >= (long)self.allSelections.count - 1) ? 0 : (self.currentMatchIndex + 1);
-            }
-        }
-    }
-
-    [self updateHighlights];
+    [self.sideSearchField.window makeFirstResponder:self.sideSearchField];
 }
 
 - (void)updateHighlights {
-    if (self.allSelections.count == 0) {
-        self.findStatusLabel.stringValue = @"0/0";
+    if (self.searchResults.count == 0) {
         self.pdfView.highlightedSelections = nil;
         return;
     }
 
-    self.findStatusLabel.stringValue = [NSString stringWithFormat:@"%ld/%ld", (long)(self.currentMatchIndex + 1), (long)self.allSelections.count];
-
-    // 必须使用深拷贝，否则会污染 PDFKit 底层的 Selection 缓存，导致之前输入一半的单词（如 soft）一直高亮
-    NSMutableArray<PDFSelection *> *coloredSelections = [NSMutableArray arrayWithCapacity:self.allSelections.count];
-
-    for (NSInteger i = 0; i < (long)self.allSelections.count; i++) {
-        // 1. 拷贝 Selection
-        PDFSelection *sel = [self.allSelections[i] copy];
-
-        // 2. 设置颜色
+    NSMutableArray<PDFSelection *> *coloredSelections = [NSMutableArray arrayWithCapacity:self.searchResults.count];
+    for (NSInteger i = 0; i < (NSInteger)self.searchResults.count; i++) {
+        PDFSelection *sel = [self.searchResults[i] copy];
+        // 当前选中的是橙色，其他是黄色
         if (i == self.currentMatchIndex) {
             sel.color = [NSColor colorWithRed:1.0 green:0.588 blue:0.196 alpha:1.0]; // #FF9632 (橙色)
         } else {
             sel.color = [NSColor yellowColor];
         }
-
         [coloredSelections addObject:sel];
     }
 
-    // 3. 触发 PDFView 重绘高亮
     self.pdfView.highlightedSelections = coloredSelections;
-
-    // 4. 跳转到当前匹配项（使用 goToSelection: 而不是 scrollSelectionToVisible: 以支持跨页跳转）
-    if (self.currentMatchIndex >= 0 && self.currentMatchIndex < (long)coloredSelections.count) {
-        PDFSelection *currentSel = coloredSelections[self.currentMatchIndex];
-        [self.pdfView goToSelection:currentSel];
+    if (self.currentMatchIndex >= 0 && self.currentMatchIndex < (NSInteger)coloredSelections.count) {
+        [self.pdfView goToSelection:coloredSelections[self.currentMatchIndex]];
     }
-}
-
-- (void)findTextFieldAction:(id)sender {
-    [self performFindWithString:self.findTextField.stringValue backwards:NO];
-}
-
-- (void)findPrevious:(id)sender {
-    [self performFindWithString:self.findTextField.stringValue backwards:YES];
 }
 
 - (void)findNext:(id)sender {
-    [self performFindWithString:self.findTextField.stringValue backwards:NO];
+    if (self.searchResults.count == 0) return;
+    NSInteger next = self.currentMatchIndex + 1;
+    if (next >= (NSInteger)self.searchResults.count) next = 0;
+    [self.searchResultsTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:next] byExtendingSelection:NO];
+    [self.searchResultsTableView scrollRowToVisible:next];
 }
 
-#pragma mark - NSTextFieldDelegate (Find Bar 实时搜索与快捷键)
+- (void)findPrevious:(id)sender {
+    if (self.searchResults.count == 0) return;
+    NSInteger prev = self.currentMatchIndex - 1;
+    if (prev < 0) prev = self.searchResults.count - 1;
+    [self.searchResultsTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:prev] byExtendingSelection:NO];
+    [self.searchResultsTableView scrollRowToVisible:prev];
+}
+
+#pragma mark - NSSearchFieldDelegate & NSTextFieldDelegate
 
 - (void)controlTextDidChange:(NSNotification *)notification {
     NSTextField *field = notification.object;
-    if (field == self.findTextField) {
-        // 防抖处理
-        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(triggerSearchFromTyping) object:nil];
-        [self performSelector:@selector(triggerSearchFromTyping) withObject:nil afterDelay:0.25];
+    if (field == self.sideSearchField) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performSideSearch) object:nil];
+        [self performSelector:@selector(performSideSearch) withObject:nil afterDelay:0.3];
     }
 }
 
-- (void)triggerSearchFromTyping {
-    [self performFindWithString:self.findTextField.stringValue backwards:NO];
-}
-
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
-    if (control == self.findTextField) {
-        // ESC -> 关闭 Find Bar
-        if (commandSelector == @selector(cancelOperation:)) {
-            [self closeFindBar:nil];
-            return YES;
-        }
-        // Enter -> 查找下一个 (Shift+Enter -> 查找上一个)
+    if (control == self.sideSearchField) {
+        // 在搜索框按 Enter 查找下一个，Shift+Enter 查找上一个
         if (commandSelector == @selector(insertNewline:)) {
-            NSUInteger flags = [NSEvent modifierFlags];
-            if (flags & NSEventModifierFlagShift) {
+            if ([NSEvent modifierFlags] & NSEventModifierFlagShift) {
                 [self findPrevious:nil];
             } else {
                 [self findNext:nil];
@@ -400,6 +356,9 @@
 }
 
 - (void)cleanup {
+
+    [self saveCurrentPosition];
+
     if (_eventMonitor) {
         [NSEvent removeMonitor:_eventMonitor];
         _eventMonitor = nil;
@@ -421,29 +380,24 @@
 - (void)setupSaveBar {
     CGFloat barHeight = 32.0;
     NSRect frame = self.containerView.frame;
-    _saveBarView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, barHeight)];
-    _saveBarView.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
-    _saveBarView.wantsLayer = YES;
-    _saveBarView.layer.backgroundColor = [NSColor windowBackgroundColor].CGColor;
+    _saveBarView = appine_create_color_box(NSMakeRect(0, 0, frame.size.width, barHeight), [NSColor windowBackgroundColor], NSViewWidthSizable | NSViewMaxYMargin);
     _saveBarView.hidden = YES;
 
     NSTextField *label = [NSTextField labelWithString:@"已修改 (Unsaved Changes)"];
     label.frame = NSMakeRect(10, 8, 200, 16);
-    [_saveBarView addSubview:label];
+    [((NSBox *)_saveBarView).contentView addSubview:label];
 
     NSButton *saveBtn = [NSButton buttonWithTitle:@"保存 (Cmd-S)" target:self action:@selector(savePdf)];
     saveBtn.frame = NSMakeRect(frame.size.width - 120, 4, 100, 24);
     saveBtn.autoresizingMask = NSViewMinXMargin;
-    [_saveBarView addSubview:saveBtn];
 
-    [self.containerView addSubview:_saveBarView];
+    [((NSBox *)_saveBarView).contentView addSubview:saveBtn];
+
 }
 
 - (void)setupAnnotationUI {
     // 1. Primary Menu (Highlight / Comment)
-    _primaryMenu = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 160, 40)];
-    _primaryMenu.wantsLayer = YES;
-    _primaryMenu.layer.backgroundColor = [NSColor controlBackgroundColor].CGColor;
+    _primaryMenu = appine_create_color_box(NSMakeRect(0, 0, 160, 40), [NSColor windowBackgroundColor], NSViewNotSizable);
     _primaryMenu.layer.cornerRadius = 8;
     _primaryMenu.layer.shadowOpacity = 0.3;
     _primaryMenu.hidden = YES;
@@ -452,8 +406,8 @@
     hlBtn.frame = NSMakeRect(10, 8, 70, 24);
     NSButton *cmBtn = [NSButton buttonWithTitle:@"Note" target:self action:@selector(actionComment)];
     cmBtn.frame = NSMakeRect(85, 8, 70, 24);
-    [_primaryMenu addSubview:hlBtn];
-    [_primaryMenu addSubview:cmBtn];
+    [((NSBox *)_primaryMenu).contentView addSubview:hlBtn];
+    [((NSBox *)_primaryMenu).contentView addSubview:cmBtn];
     [self.containerView addSubview:_primaryMenu];
 
     // 2. Secondary Menus
@@ -466,9 +420,8 @@
 - (NSView *)createSecondaryMenuWithComment:(BOOL)hasComment {
     // 1. 如果是 Note，高度设为 140 以容纳三行；如果是普通 Highlight，保持单行 40
     CGFloat height = hasComment ? 140 : 40;
-    NSView *menu = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 280, height)];
-    menu.wantsLayer = YES;
-    menu.layer.backgroundColor = [NSColor controlBackgroundColor].CGColor;
+    NSView *menu = appine_create_color_box(NSMakeRect(0, 0, 280, height), [NSColor windowBackgroundColor], NSViewNotSizable);
+
     menu.layer.cornerRadius = 8;
     menu.layer.shadowOpacity = 0.3;
     menu.hidden = YES;
@@ -479,13 +432,13 @@
         NSButton *btn = [NSButton buttonWithTitle:styles[i] target:self action:@selector(changeStyle:)];
         btn.tag = i; // 0: Highlight, 1: Underline, 2: StrikeOut
         btn.frame = NSMakeRect(10 + i*35, height - 32, 30, 24);
-        [menu addSubview:btn];
+        [((NSBox *)menu).contentView addSubview:btn];
     }
 
     // 顶部右侧：删除按钮
     NSButton *delBtn = [NSButton buttonWithTitle:@"Del" target:self action:@selector(deleteAnnotation)];
     delBtn.frame = NSMakeRect(240, height - 32, 30, 24);
-    [menu addSubview:delBtn];
+    [((NSBox *)menu).contentView addSubview:delBtn];
 
     // 颜色按钮
     NSArray *colors = @[[NSColor yellowColor], [NSColor greenColor], [NSColor blueColor], [NSColor redColor], [NSColor purpleColor]];
@@ -499,7 +452,7 @@
         CGFloat colorX = hasComment ? (10 + i*25) : (120 + i*25);
         btn.frame = NSMakeRect(colorX, colorY, 20, 24);
         btn.bordered = NO;
-        [menu addSubview:btn];
+        [((NSBox *)menu).contentView addSubview:btn];
     }
 
     // 中间：多行输入框 & 底部右侧：确认按钮
@@ -511,12 +464,12 @@
         _commentTextField.usesSingleLineMode = NO;
         ((NSTextFieldCell *)_commentTextField.cell).wraps = YES;
         ((NSTextFieldCell *)_commentTextField.cell).scrollable = NO;
-        [menu addSubview:_commentTextField];
+        [((NSBox *)menu).contentView addSubview:_commentTextField];
 
         // 确认按钮放在底部右侧
         NSButton *confirmBtn = [NSButton buttonWithTitle:@"Confirm" target:self action:@selector(confirmComment)];
         confirmBtn.frame = NSMakeRect(200, 8, 70, 24);
-        [menu addSubview:confirmBtn];
+        [((NSBox *)menu).contentView addSubview:confirmBtn];
     }
 
     return menu;
@@ -575,7 +528,7 @@
         if (!undoMgr.canUndo) {
             self.isModified = NO;
             self.saveBarView.hidden = YES;
-            NSLog(@"[appine] Undo stack is empty, document is now clean.");
+            APPINE_LOG(@"[appine] Undo stack is empty, document is now clean.");
         } else {
             [self markModified];
         }
@@ -771,7 +724,7 @@
 
     NSPoint pagePoint = [self.pdfView convertPoint:pt toPage:page];
     PDFAnnotation *ann = [page annotationAtPoint:pagePoint];
-    NSLog(@"[Appine Debug] 点击页面坐标: %@, 捕获到注解类型: %@", NSStringFromPoint(pagePoint), ann ? ann.type : @"无");
+    APPINE_LOG(@"[Appine Debug] 点击页面坐标: %@, 捕获到注解类型: %@", NSStringFromPoint(pagePoint), ann ? ann.type : @"无");
 
     if (ann) {
         // 如果点到了原生的 Popup 黄色方块，我们要通过遍历找到它的父节点（即高亮本身）
@@ -779,7 +732,7 @@
             for (PDFAnnotation *parentAnn in page.annotations) {
                 if (parentAnn.popup == ann) {
                     ann = parentAnn;
-                    NSLog(@"[Appine Debug] 成功回溯找到父节点高亮");
+                    APPINE_LOG(@"[Appine Debug] 成功回溯找到父节点高亮");
                     break;
                 }
             }
@@ -789,7 +742,7 @@
             for (PDFAnnotation *parentAnn in page.annotations) {
                 if ([parentAnn.type isEqualToString:@"Highlight"] && NSEqualRects(parentAnn.bounds, ann.bounds)) {
                     ann = parentAnn;
-                    NSLog(@"[Appine Debug] 成功回溯找到边缘线对应的高亮");
+                    APPINE_LOG(@"[Appine Debug] 成功回溯找到边缘线对应的高亮");
                     break;
                 }
             }
@@ -800,7 +753,7 @@
             [ann.type isEqualToString:@"Underline"] ||
             [ann.type isEqualToString:@"StrikeOut"]) {
 
-            NSLog(@"[Appine Debug] 确认点击了文本标记，准备弹出菜单");
+            APPINE_LOG(@"[Appine Debug] 确认点击了文本标记，准备弹出菜单");
             self.currentAnnotation = ann;
             NSRect viewRect = [self.pdfView convertRect:ann.bounds fromPage:page];
 
@@ -816,7 +769,7 @@
             }
 
             if (isComment) {
-                NSLog(@"[Appine Debug] 这是一个 Comment，弹出 Comment Menu");
+                APPINE_LOG(@"[Appine Debug] 这是一个 Comment，弹出 Comment Menu");
                 self.commentTextField.stringValue = ann.contents ?: @"";
                 self.highlightMenu.hidden = YES;
 
@@ -824,7 +777,7 @@
                 self.commentMenu.frame = NSMakeRect(x, NSMaxY(viewRect) + 10, self.commentMenu.frame.size.width, self.commentMenu.frame.size.height);
                 self.commentMenu.hidden = NO;
             } else {
-                NSLog(@"[Appine Debug] 这是一个纯 Highlight，弹出 Highlight Menu");
+                APPINE_LOG(@"[Appine Debug] 这是一个纯 Highlight，弹出 Highlight Menu");
                 self.commentMenu.hidden = YES;
 
                 CGFloat x = NSMidX(viewRect) - self.highlightMenu.frame.size.width / 2;
@@ -855,12 +808,345 @@
         if (success) {
             self.isModified = NO;
             self.saveBarView.hidden = YES;
-            NSLog(@"[Appine] PDF 批注保存成功！");
+            APPINE_LOG(@"[Appine] PDF 批注保存成功！");
         } else {
-            NSLog(@"[Appine] PDF 保存失败！");
+            APPINE_LOG(@"[Appine] PDF 保存失败！");
         }
     }
 }
+
+// 只响应当前 PDF 的撤销事件
+- (void)undoManagerDidClose:(NSNotification *)notif {
+    if (notif.object == self.pdfView.undoManager) {
+        [self markModified];
+    }
+}
+
+// PDFView 没有公开 scrollView 接口，通过子视图遍历获取
+- (NSScrollView *)pdfScrollView {
+    for (NSView *subview in self.pdfView.subviews) {
+        if ([subview isKindOfClass:[NSScrollView class]]) {
+            return (NSScrollView *)subview;
+        }
+    }
+    return nil;
+}
+
+// 保存当前阅读位置到 NSUserDefaults
+- (void)saveCurrentPosition {
+    if (!self.pdfView.document || !self.path) return;
+    // 用 scrollView 的 documentVisibleRect origin 保存精确滚动位置
+    NSScrollView *scrollView = [self pdfScrollView];
+    if (!scrollView) return;
+    NSPoint scrollOrigin = scrollView.documentVisibleRect.origin;
+    NSString *key = [NSString stringWithFormat:@"AppinePDFPos_%@", self.path];
+    NSDictionary *dict = @{@"scrollX": @(scrollOrigin.x), @"scrollY": @(scrollOrigin.y)};
+    [[NSUserDefaults standardUserDefaults] setObject:dict forKey:key];
+    APPINE_LOG(@"[Appine] saveCurrentPosition: scrollOrigin=%@", NSStringFromPoint(scrollOrigin));
+}
+
+// 恢复上次阅读位置
+- (void)restoreLastPosition {
+    APPINE_LOG(@"[Appine] restoreLastPosition called, path=%@, hasDoc=%d", self.path, self.pdfView.document != nil);
+    if (!self.pdfView.document || !self.path) return;
+    NSString *key = [NSString stringWithFormat:@"AppinePDFPos_%@", self.path];
+    NSDictionary *dict = [[NSUserDefaults standardUserDefaults] dictionaryForKey:key];
+    APPINE_LOG(@"[Appine] restoreLastPosition key=%@, dict=%@", key, dict);
+    if (dict) {
+        NSPoint scrollOrigin = NSMakePoint([dict[@"scrollX"] doubleValue], [dict[@"scrollY"] doubleValue]);
+        APPINE_LOG(@"[Appine] restoreLastPosition: scrollOrigin=%@", NSStringFromPoint(scrollOrigin));
+
+        __weak __typeof__(self) weakSelf = self;
+        __block id observer = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSViewFrameDidChangeNotification
+                        object:self.pdfView
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+                        if (weakSelf.pdfView.frame.size.height > 0) {
+                            NSScrollView *scrollView = [weakSelf pdfScrollView];
+                            if (scrollView) {
+                                APPINE_LOG(@"[Appine] restoreLastPosition: applying scrollOrigin=%@",
+                                      NSStringFromPoint(scrollOrigin));
+                                [scrollView.documentView scrollPoint:scrollOrigin];
+                            }
+                            [[NSNotificationCenter defaultCenter] removeObserver:observer];
+                            observer = nil;
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                weakSelf.isSavePositionEnabled = YES;
+                            });
+                        }
+                    }];
+    } else {
+        _isSavePositionEnabled = YES;
+    }
+}
+
+// ===========================================================================
+// 侧边栏面板控制与搜索逻辑
+// ===========================================================================
+
+- (void)updateLayoutForSidePanel {
+    CGFloat toolBarWidth = 40.0;
+    CGFloat sidePanelWidth = 250.0;
+
+    BOOL showPanel = self.currentSidePanelMode != 0;
+    self.sidePanelView.hidden = !showPanel;
+
+    self.outlineScrollView.hidden = (self.currentSidePanelMode != 1);
+    self.searchPanelView.hidden = (self.currentSidePanelMode != 2);
+
+    // 动态调整 PDFView 的宽度
+    CGFloat pdfX = toolBarWidth + (showPanel ? sidePanelWidth : 0);
+    NSRect pdfFrame = NSMakeRect(pdfX, 0, self.containerView.bounds.size.width - pdfX, self.containerView.bounds.size.height);
+
+    self.pdfView.frame = pdfFrame;
+
+    // 更新按钮高亮状态 (macOS 按钮选中效果)
+    self.outlineBtn.state = (self.currentSidePanelMode == 1) ? NSControlStateValueOn : NSControlStateValueOff;
+    self.searchBtn.state = (self.currentSidePanelMode == 2) ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (void)toggleOutlinePanel {
+    if (self.currentSidePanelMode == 1) {
+        self.currentSidePanelMode = 0; // 再次点击关闭
+    } else {
+        self.currentSidePanelMode = 1;
+        [self.outlineView reloadData];
+    }
+    [self updateLayoutForSidePanel];
+}
+
+- (void)toggleSearchPanel {
+    if (self.currentSidePanelMode == 2) {
+        self.currentSidePanelMode = 0; // 再次点击关闭
+    } else {
+        self.currentSidePanelMode = 2;
+        [self.sideSearchField.window makeFirstResponder:self.sideSearchField];
+    }
+    [self updateLayoutForSidePanel];
+}
+
+// 侧边栏异步流式搜索
+- (void)performSideSearch {
+    NSString *query = self.sideSearchField.stringValue;
+
+    // 取消之前的搜索并清空结果
+    [self.pdfView.document cancelFindString];
+    [self.searchResults removeAllObjects];
+    self.currentMatchIndex = -1;
+    [self.searchResultsTableView reloadData];
+    [self updateHighlights];
+
+    if (query.length > 0) {
+        // 使用 PDFKit 的异步流式搜索，结果会通过 didMatchString: 代理返回
+        [self.pdfView.document beginFindString:query withOptions:NSCaseInsensitiveSearch];
+    }
+}
+
+// PDFDocumentDelegate 搜索结果回调
+- (void)didMatchString:(PDFSelection *)instance {
+    // 每次匹配到一个结果就会回调一次
+    [self.searchResults addObject:instance];
+    [self.searchResultsTableView reloadData];
+
+    if (self.currentMatchIndex == -1) {
+        self.currentMatchIndex = 0;
+        // 自动选中并滚动到第一个结果
+        [self.searchResultsTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [self.searchResultsTableView scrollRowToVisible:0];
+    }
+
+    // 防抖更新高亮，防止搜索结果过多时卡死主线程
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateHighlights) object:nil];
+    [self performSelector:@selector(updateHighlights) withObject:nil afterDelay:0.1];
+}
+
+
+// ===========================================================================
+// NSTableView DataSource & Delegate (侧边栏搜索结果)
+// ===========================================================================
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    return self.searchResults.count;
+}
+
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    NSTableCellView *cell = [tableView makeViewWithIdentifier:@"SearchCell" owner:nil];
+    if (!cell) {
+        cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, tableColumn.width, 60)];
+        cell.identifier = @"SearchCell";
+
+        // 页码标签
+        NSTextField *pageLabel = [NSTextField labelWithString:@""];
+        pageLabel.frame = NSMakeRect(5, 40, tableColumn.width - 10, 16);
+        pageLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightBold];
+        pageLabel.textColor = [NSColor secondaryLabelColor];
+        pageLabel.tag = 101;
+        [cell addSubview:pageLabel];
+
+        // 上下文内容标签
+        NSTextField *contentLabel = [NSTextField wrappingLabelWithString:@""];
+        contentLabel.frame = NSMakeRect(5, 5, tableColumn.width - 10, 35);
+        contentLabel.font = [NSFont systemFontOfSize:12];
+        contentLabel.maximumNumberOfLines = 2;
+        contentLabel.tag = 102;
+        [cell addSubview:contentLabel];
+    }
+
+    PDFSelection *sel = self.searchResults[row];
+    NSTextField *pageLabel = [cell viewWithTag:101];
+    NSTextField *contentLabel = [cell viewWithTag:102];
+
+    // 获取页码
+    if (sel.pages.count > 0) {
+        PDFPage *page = sel.pages.firstObject;
+        NSUInteger pageIndex = [self.pdfView.document indexForPage:page];
+        pageLabel.stringValue = [NSString stringWithFormat:@"第 %lu 页", (unsigned long)(pageIndex + 1)];
+    }
+
+    // 扩展 Selection 以获取上下文 (前后各取 20 个字符)
+    PDFSelection *extendedSel = [sel copy];
+    [extendedSel extendSelectionAtStart:20];
+    [extendedSel extendSelectionAtEnd:20];
+    // 去除换行符，使排版更紧凑
+    NSString *contextStr = [extendedSel.string stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+
+    // 使用富文本在 Chunk 中高亮搜索词
+    NSMutableAttributedString *attrStr = [[NSMutableAttributedString alloc] initWithString:contextStr ?: @""];
+    NSString *query = self.sideSearchField.stringValue;
+    if (query.length > 0 && contextStr) {
+        NSRange range = [contextStr rangeOfString:query options:NSCaseInsensitiveSearch];
+        if (range.location != NSNotFound) {
+            [attrStr addAttribute:NSBackgroundColorAttributeName value:[NSColor yellowColor] range:range];
+            [attrStr addAttribute:NSForegroundColorAttributeName value:[NSColor blackColor] range:range];
+            [attrStr addAttribute:NSFontAttributeName value:[NSFont systemFontOfSize:12 weight:NSFontWeightBold] range:range];
+        }
+    }
+    contentLabel.attributedStringValue = attrStr;
+
+    return cell;
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    NSInteger row = self.searchResultsTableView.selectedRow;
+    if (row >= 0 && row < (NSInteger)self.searchResults.count) {
+        self.currentMatchIndex = row;
+        [self updateHighlights]; // 触发 PDF 正文的颜色更新与跳转
+    }
+}
+
+// NSOutlineView DataSource & Delegate
+- (NSInteger)outlineView:(NSOutlineView *)outlineView numberOfChildrenOfItem:(id)item {
+    PDFOutline *outline = item ? (PDFOutline *)item : self.pdfView.document.outlineRoot;
+    return outline ? outline.numberOfChildren : 0;
+}
+
+- (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)index ofItem:(id)item {
+    PDFOutline *outline = item ? (PDFOutline *)item : self.pdfView.document.outlineRoot;
+    return [outline childAtIndex:index];
+}
+
+- (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(id)item {
+    return ((PDFOutline *)item).numberOfChildren > 0;
+}
+
+- (id)outlineView:(NSOutlineView *)outlineView objectValueForTableColumn:(NSTableColumn *)tableColumn byItem:(id)item {
+    return ((PDFOutline *)item).label;
+}
+
+- (void)outlineViewSelectionDidChange:(NSNotification *)notification {
+    NSInteger row = [self.outlineView selectedRow];
+    if (row >= 0) {
+        PDFOutline *outline = [self.outlineView itemAtRow:row];
+        if (outline.destination) {
+            [self.pdfView goToDestination:outline.destination];
+        } else if (outline.action) {
+            [self.pdfView performAction:outline.action];
+        }
+    }
+}
+
+// ===========================================================================
+// 大纲同步逻辑
+// ===========================================================================
+- (void)pdfViewScrolled:(NSNotification *)notif {
+    if (!self.isSavePositionEnabled) return;
+    // 防抖：0.5s 内连续滚动只保存最后一次
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveCurrentPosition) object:nil];
+    [self performSelector:@selector(saveCurrentPosition) withObject:nil afterDelay:0.5];
+}
+
+- (void)pageChanged:(NSNotification *)notif {
+    // 文档就绪前禁止保存，防止初始化时的假翻页覆盖存档
+    // 翻页也触发一次保存（scrolled 通知不一定在翻页时触发）
+    if (self.isSavePositionEnabled) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveCurrentPosition) object:nil];
+        [self performSelector:@selector(saveCurrentPosition) withObject:nil afterDelay:0.3];
+    }
+
+    if (self.currentSidePanelMode != 1) return; // 只有大纲显示时才同步
+    PDFPage *page = self.pdfView.currentPage;
+    if (!page) return;
+
+    PDFOutline *bestNode = [self findBestOutlineNodeForPage:page];
+    if (bestNode) {
+        NSInteger row = [self.outlineView rowForItem:bestNode];
+        if (row >= 0) {
+            [self.outlineView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
+            [self.outlineView scrollRowToVisible:row];
+        }
+    }
+}
+
+// 寻找最接近且不超过当前页码的大纲节点
+- (PDFOutline *)findBestOutlineNodeForPage:(PDFPage *)page {
+    if (!self.pdfView.document.outlineRoot) return nil;
+    NSUInteger targetPageIndex = [self.pdfView.document indexForPage:page];
+
+    PDFOutline *bestNode = nil;
+    NSUInteger bestPageIndex = 0;
+
+    // 调用标准的 Objective-C 方法进行递归，传入指针以更新结果
+    [self traverseOutlineNode:self.pdfView.document.outlineRoot
+              targetPageIndex:targetPageIndex
+                     bestNode:&bestNode
+                bestPageIndex:&bestPageIndex];
+
+    return bestNode;
+}
+
+// 递归遍历大纲树的辅助方法（替代 Block 以彻底消除循环引用警告）
+- (void)traverseOutlineNode:(PDFOutline *)node
+            targetPageIndex:(NSUInteger)targetPageIndex
+                   bestNode:(PDFOutline **)bestNode
+              bestPageIndex:(NSUInteger *)bestPageIndex {
+    if (!node) return;
+
+    PDFPage *nodePage = nil;
+    if (node.destination) {
+        nodePage = node.destination.page;
+    } else if (node.action && [node.action isKindOfClass:[PDFActionGoTo class]]) {
+        nodePage = ((PDFActionGoTo *)node.action).destination.page;
+    }
+
+    if (nodePage) {
+        NSUInteger nodePageIndex = [self.pdfView.document indexForPage:nodePage];
+        // 找到页码小于等于当前页，且最靠后的节点
+        if (nodePageIndex <= targetPageIndex && nodePageIndex >= *bestPageIndex) {
+            *bestNode = node;
+            *bestPageIndex = nodePageIndex;
+        }
+    }
+
+    // 递归遍历子节点
+    for (NSInteger i = 0; i < (NSInteger)node.numberOfChildren; i++) {
+        [self traverseOutlineNode:[node childAtIndex:i]
+                  targetPageIndex:targetPageIndex
+                         bestNode:bestNode
+                    bestPageIndex:bestPageIndex];
+    }
+}
+
 
 
 @end

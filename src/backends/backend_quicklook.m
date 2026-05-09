@@ -1,10 +1,10 @@
 /*
  * Filename: backend_quicklook.m
  * Project: Appine (App in Emacs)
- * Description: Emacs dynamic module to embed native macOS views 
+ * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,8 +24,30 @@
 #import <Quartz/Quartz.h>
 #import "appine_backend.h"
 
+// ===========================================================================
+// 自定义 QLPreviewView 子类，处理重新挂载时的刷新逻辑
+// ===========================================================================
+@interface AppineQLPreviewView : QLPreviewView
+@end
+
+@implementation AppineQLPreviewView
+- (void)viewDidMoveToSuperview {
+    [super viewDidMoveToSuperview];
+    // 当视图被重新添加到父视图 (切换 Tab 恢复) 时，重新赋值 previewItem 触发渲染
+    if (self.superview) {
+        id<QLPreviewItem> item = self.previewItem;
+        if (item) {
+            self.previewItem = nil;
+            self.previewItem = item;
+        }
+    }
+}
+@end
+
+// ===========================================================================
+
 @interface AppineQuickLookBackend : NSObject <AppineBackend>
-@property(nonatomic, strong) QLPreviewView *previewView;
+@property(nonatomic, strong) AppineQLPreviewView *previewView;
 @property(nonatomic, copy) NSString *title;
 @end
 
@@ -38,11 +60,11 @@
 - (instancetype)initWithPath:(NSString *)path {
     if (self = [super init]) {
         _title = [path lastPathComponent] ?: @"Preview";
-        
-        // QLPreviewView init
-        _previewView = [[QLPreviewView alloc] initWithFrame:NSZeroRect style:QLPreviewViewStyleNormal];
+
+        // 使用自定义子类初始化
+        _previewView = [[AppineQLPreviewView alloc] initWithFrame:NSZeroRect style:QLPreviewViewStyleNormal];
         _previewView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        
+
         // NSURL 默认实现了 QLPreviewItem 协议
         NSURL *fileURL = [NSURL fileURLWithPath:path];
         if (fileURL) {

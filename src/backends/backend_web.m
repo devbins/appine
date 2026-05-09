@@ -3,8 +3,8 @@
  * Project: Appine (App in Emacs)
  * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -24,9 +24,8 @@
 #import <WebKit/WebKit.h>
 #import "appine_core.h"
 #import "appine_backend.h"
+#import "backend_web_utils.h"
 #import <dlfcn.h>
-
-static void dylib_dummy_symbol() {} // locate path
 
 extern void appine_core_add_web_tab(NSString *urlString);
 extern void appine_core_update_tabs(void);
@@ -116,7 +115,7 @@ extern void appine_core_update_tabs(void);
 // ===========================================================================
 // AppineWebBackend
 // ===========================================================================
-@interface AppineWebBackend : NSObject <AppineBackend, WKNavigationDelegate, WKUIDelegate, NSTextFieldDelegate, WKDownloadDelegate, WKScriptMessageHandler>
+@interface AppineWebBackend : NSObject <AppineBackend, WKNavigationDelegate, WKUIDelegate, NSTextFieldDelegate, WKDownloadDelegate>
 
 @property (nonatomic, strong) NSView *containerView;
 @property (nonatomic, strong) AppineWebView *webView;
@@ -171,8 +170,7 @@ extern void appine_core_update_tabs(void);
 
 - (void)cleanup {
     // 1. 移除强引用的 ScriptMessageHandler，打破循环引用
-    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"appineSaveData"];
-    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"appineLog"];
+    appine_cleanup_webview_plugins(self.webView.configuration);
 
     // 2. 停止加载和媒体播放
     [self.webView stopLoading];
@@ -188,36 +186,31 @@ extern void appine_core_update_tabs(void);
     CGFloat navHeight = 32.0;
 
     // 2. 创建专属导航栏 (固定在容器顶部)
-    NSView *navBar = [[NSView alloc] initWithFrame:NSMakeRect(0, 600 - navHeight, 800, navHeight)];
-    navBar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    navBar.wantsLayer = YES;
-    navBar.layer.backgroundColor = [NSColor controlBackgroundColor].CGColor;
+    NSBox *navBar = appine_create_color_box(NSMakeRect(0, 600 - navHeight, 800, navHeight), [NSColor windowBackgroundColor], NSViewWidthSizable | NSViewMinYMargin);
 
     // 底部分割线
-    NSView *separator = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 1)];
-    separator.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
-    separator.wantsLayer = YES;
-    separator.layer.backgroundColor = [NSColor gridColor].CGColor;
-    [navBar addSubview:separator];
+    NSBox *separator = appine_create_color_box(NSMakeRect(0, 0, 800, 1), [NSColor separatorColor], NSViewWidthSizable | NSViewMaxYMargin);
+
+    [navBar.contentView addSubview:separator];
     [_containerView addSubview:navBar];
 
     // 3. 添加导航按钮 (<, >, ↻)
     _backBtn = [NSButton buttonWithTitle:@"<" target:self action:@selector(goBack:)];
     _backBtn.frame = NSMakeRect(5, 4, 28, 24);
-    _backBtn.bezelStyle = NSBezelStyleTexturedRounded;
+    _backBtn.bezelStyle = NSBezelStyleRounded;
     _backBtn.enabled = NO;
-    [navBar addSubview:_backBtn];
+    [navBar.contentView addSubview:_backBtn];
 
     _forwardBtn = [NSButton buttonWithTitle:@">" target:self action:@selector(goForward:)];
     _forwardBtn.frame = NSMakeRect(38, 4, 28, 24);
-    _forwardBtn.bezelStyle = NSBezelStyleTexturedRounded;
+    _forwardBtn.bezelStyle = NSBezelStyleRounded;
     _forwardBtn.enabled = NO;
-    [navBar addSubview:_forwardBtn];
+    [navBar.contentView addSubview:_forwardBtn];
 
     _reloadBtn = [NSButton buttonWithTitle:@"↻" target:self action:@selector(reload:)];
     _reloadBtn.frame = NSMakeRect(71, 4, 28, 24);
-    _reloadBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [navBar addSubview:_reloadBtn];
+    _reloadBtn.bezelStyle = NSBezelStyleRounded;
+    [navBar.contentView addSubview:_reloadBtn];
 
     // 4. 添加地址栏 (在按钮右侧)
     _urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(105, 5, 800 - 110, 22)];
@@ -226,7 +219,11 @@ extern void appine_core_update_tabs(void);
     _urlField.target = self;
     _urlField.action = @selector(urlEntered:);
     _urlField.focusRingType = NSFocusRingTypeNone;
-    [navBar addSubview:_urlField];
+    // 防止太长的参数看不见
+    _urlField.usesSingleLineMode = YES;
+    [[_urlField cell] setScrollable:YES];
+    [[_urlField cell] setLineBreakMode:NSLineBreakByTruncatingTail];
+    [navBar.contentView addSubview:_urlField];
 
     // ==========================================
     // 配置 WebView 的持久化与伪装
@@ -253,114 +250,8 @@ extern void appine_core_update_tabs(void);
     [config.userContentController addUserScript:storageScript];
 
     // 注册 JS 消息处理器，用于接收保存请求
-    // 注意：你的 ViewController 需要实现 WKScriptMessageHandler 协议
-    [config.userContentController addScriptMessageHandler:self name:@"appineSaveData"];
-    // 1. 注册消息通道
-    [config.userContentController addScriptMessageHandler:self name:@"appineLog"];
-
-    // 2. 注入 JS 脚本：劫持 console.log 并监听所有 keydown 和 全局错误
-    NSString *debugJS = @"\
-        const origLog = console.log;\n\
-        console.log = function(...args) {\n\
-            origLog.apply(console, args);\n\
-            const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');\n\
-            window.webkit.messageHandlers.appineLog.postMessage(msg);\n\
-        };\n\
-        /* 捕获语法错误等全局异常 */\n\
-        window.addEventListener('error', function(e) {\n\
-            console.log('❌ [Appine-JS-Error] 捕获到页面错误:', e.message, '行号:', e.lineno);\n\
-        });\n\
-        window.addEventListener('keydown', function(e) {\n\
-            console.log('🔥 JS 捕获到按键:', e.key, 'keyCode:', e.keyCode);\n\
-        }, true);\n\
-    ";
-
-    WKUserScript *debugScript = [[WKUserScript alloc] initWithSource:debugJS
-                                                       injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                                                    forMainFrameOnly:YES];
-    [config.userContentController addUserScript:debugScript];
-
-    // ==========================================
-    // 插件系统初始化 (支持 ES Module 和 PluginLoader)
-    // ==========================================
-    Dl_info info;
-    NSString *appineDir = nil;
-
-    if (dladdr((const void *)&dylib_dummy_symbol, &info) != 0) {
-        // info.dli_fname 包含了当前 dylib 的完整绝对路径 (例如: /path/to/your/libappine.dylib)
-        NSString *dylibFullPath = [NSString stringWithUTF8String:info.dli_fname];
-        // 剔除文件名，获取 dylib 所在的目录
-        appineDir = [dylibFullPath stringByDeletingLastPathComponent];
-    } else {
-        // Fallback: 万一获取失败，退回到默认路径
-        appineDir = [@"~/.emacs.d/straight/repos/appine" stringByExpandingTildeInPath];
-        APPINE_LOG(@"[Warning] 无法动态获取 dylib 路径，使用默认路径: %@", appineDir);
-    }
-    NSString *extensionDir = [appineDir stringByAppendingPathComponent:@"browser-extension"];
-    NSString *pluginsDir = [extensionDir stringByAppendingPathComponent:@"plugins"];
-    // 注入全局工具库 (AppineUtils)
-    NSString *utilsPath = [extensionDir stringByAppendingPathComponent:@"utils.js"];
-    NSString *utilsJS = [NSString stringWithContentsOfFile:utilsPath encoding:NSUTF8StringEncoding error:nil];
-    if (utilsJS) {
-        // 注意：这里使用 WKUserScriptInjectionTimeAtDocumentStart，确保它最早可用
-        WKUserScript *utilsScript = [[WKUserScript alloc] initWithSource:utilsJS
-                                                           injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                                                        forMainFrameOnly:YES];
-        [config.userContentController addUserScript:utilsScript];
-    } else {
-        APPINE_LOG(@"[Appine-Warning] 未找到 utils.js");
-    }
-    // 1. 读取并注入 content.js (作为基础环境)
-    NSString *contentJSPath = [extensionDir stringByAppendingPathComponent:@"content.js"];
-    NSString *contentJS = [NSString stringWithContentsOfFile:contentJSPath encoding:NSUTF8StringEncoding error:nil];
-
-    if (contentJS) {
-        // 将 content.js 作为一个 Script 注入
-        WKUserScript *loaderScript = [[WKUserScript alloc] initWithSource:contentJS
-                                                            injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
-                                                         forMainFrameOnly:YES];
-        [config.userContentController addUserScript:loaderScript];
-
-        // 2. 遍历 plugins 目录，注入各个插件
-        NSArray *plugins = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:pluginsDir error:nil];
-        for (NSString *pluginName in plugins) {
-            if ([pluginName hasPrefix:@"."]) continue; // 忽略隐藏文件
-
-            NSString *pluginIndexPath = [NSString stringWithFormat:@"%@/%@/index.js", pluginsDir, pluginName];
-            NSString *pluginJS = [NSString stringWithContentsOfFile:pluginIndexPath encoding:NSUTF8StringEncoding error:nil];
-
-            if (pluginJS) {
-                NSLog(@"[Appine-Plugin] 准备注入插件: %@", pluginName);
-
-                NSMutableString *pluginInjectionJS = [NSMutableString string];
-
-                // 替换 export default 为 return，包装成 IIFE
-                NSString *modifiedJS = [pluginJS stringByReplacingOccurrencesOfString:@"export default" withString:@"return"];
-
-                [pluginInjectionJS appendFormat:@"{\n"];
-                [pluginInjectionJS appendFormat:@"  try {\n"];
-                [pluginInjectionJS appendFormat:@"    console.log('[Appine-Plugin] ⏳ 开始解析并执行插件: %@');\n", pluginName];
-                [pluginInjectionJS appendFormat:@"    const pluginObj = (function() {\n%@\n    })();\n", modifiedJS];
-
-                // 调用 content.js 中暴露的 window.PluginLoader
-                [pluginInjectionJS appendFormat:@"    window.PluginLoader.register(pluginObj);\n"];
-
-                [pluginInjectionJS appendFormat:@"  } catch(e) {\n"];
-                [pluginInjectionJS appendFormat:@"    console.log('[Appine-Plugin] ❌ 执行插件 %@ 失败: ' + (e.message || e));\n", pluginName];
-                [pluginInjectionJS appendFormat:@"  }\n"];
-                [pluginInjectionJS appendFormat:@"}\n"];
-
-                // 为每一个插件单独创建一个 WKUserScript
-                WKUserScript *pluginScript = [[WKUserScript alloc] initWithSource:pluginInjectionJS
-                                                                    injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
-                                                                 forMainFrameOnly:YES];
-                [config.userContentController addUserScript:pluginScript];
-            }
-        }
-    } else {
-        NSLog(@"[Appine-Plugin] ⚠️ 未找到 content.js");
-    }
-
+    // 引入插件
+    appine_setup_webview_plugins(config);
     // 1. 强制使用系统的默认持久化数据存储（保存 Cookie、LocalStorage、Session 等）
     config.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
 
@@ -412,24 +303,18 @@ extern void appine_core_update_tabs(void);
     NSRect containerFrame = self.containerView.frame;
 
     // Find Bar 位于 NavBar 正下方
-    _findBarView = [[NSView alloc] initWithFrame:NSMakeRect(0, containerFrame.size.height - navHeight - findBarHeight, containerFrame.size.width, findBarHeight)];
-    _findBarView.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    _findBarView.wantsLayer = YES;
-    _findBarView.layer.backgroundColor = [NSColor controlBackgroundColor].CGColor;
-    _findBarView.hidden = YES;
+    _findBarView = appine_create_color_box(NSMakeRect(0, containerFrame.size.height - navHeight - findBarHeight, containerFrame.size.width, findBarHeight), [NSColor windowBackgroundColor], NSViewWidthSizable | NSViewMinYMargin);
 
     // 顶部分割线
-    NSView *separator = [[NSView alloc] initWithFrame:NSMakeRect(0, findBarHeight - 1, containerFrame.size.width, 1)];
-    separator.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    separator.wantsLayer = YES;
-    separator.layer.backgroundColor = [NSColor gridColor].CGColor;
-    [_findBarView addSubview:separator];
+    NSBox *separator = appine_create_color_box(NSMakeRect(0, findBarHeight - 1, containerFrame.size.width, 1), [NSColor separatorColor], NSViewWidthSizable | NSViewMinYMargin);
+
+    [((NSBox *)_findBarView).contentView addSubview:separator];
 
     // 关闭按钮
     NSButton *closeBtn = [NSButton buttonWithTitle:@"✕" target:self action:@selector(closeFindBar:)];
     closeBtn.frame = NSMakeRect(10, 5, 24, 22);
-    closeBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [_findBarView addSubview:closeBtn];
+    closeBtn.bezelStyle = NSBezelStyleRounded;
+    [((NSBox *)_findBarView).contentView addSubview:closeBtn];
 
     // 搜索输入框
     _findTextField = [[NSTextField alloc] initWithFrame:NSMakeRect(40, 5, 200, 22)];
@@ -438,25 +323,27 @@ extern void appine_core_update_tabs(void);
     _findTextField.target = self;
     _findTextField.action = @selector(findTextFieldAction:);
     _findTextField.focusRingType = NSFocusRingTypeNone;
-    [_findBarView addSubview:_findTextField];
+    [((NSBox *)_findBarView).contentView addSubview:_findTextField];
 
     // 状态标签
     _findStatusLabel = [NSTextField labelWithString:@""];
     _findStatusLabel.frame = NSMakeRect(250, 5, 80, 22);
     _findStatusLabel.textColor = [NSColor secondaryLabelColor];
-    [_findBarView addSubview:_findStatusLabel];
+    [((NSBox *)_findBarView).contentView addSubview:_findStatusLabel];
 
     // 上一个按钮
     NSButton *prevBtn = [NSButton buttonWithTitle:@"▲" target:self action:@selector(findPrevious:)];
     prevBtn.frame = NSMakeRect(340, 4, 28, 24);
-    prevBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [_findBarView addSubview:prevBtn];
+    prevBtn.bezelStyle = NSBezelStyleRounded;
+    [((NSBox *)_findBarView).contentView addSubview:prevBtn];
 
     // 下一个按钮
     NSButton *nextBtn = [NSButton buttonWithTitle:@"▼" target:self action:@selector(findNext:)];
     nextBtn.frame = NSMakeRect(370, 4, 28, 24);
-    nextBtn.bezelStyle = NSBezelStyleTexturedRounded;
-    [_findBarView addSubview:nextBtn];
+    nextBtn.bezelStyle = NSBezelStyleRounded;
+    [((NSBox *)_findBarView).contentView addSubview:nextBtn];
+
+    _findBarView.hidden = YES;
 
     [self.containerView addSubview:_findBarView];
 }
@@ -826,10 +713,10 @@ extern void appine_core_update_tabs(void);
     if ([url.scheme isEqualToString:@"org-protocol"]) {
         APPINE_LOG(@"[Appine-Web] 拦截到 org-protocol: %@", url.absoluteString);
 
-        // 2. 阻止 WKWebView 的默认加载行为，防止静默失败
+        // 阻止 WKWebView 的默认加载行为，防止静默失败
         decisionHandler(WKNavigationActionPolicyCancel);
 
-        // 3. 通过 macOS 系统 API 抛出 URL。
+        // 通过 macOS 系统 API 抛出 URL。
         // 因为当前 Emacs 已经运行且（通常）注册了该协议，系统会瞬间将其路由回 Emacs 内部触发 Capture。
         [[NSWorkspace sharedWorkspace] openURL:url];
         return;
@@ -972,32 +859,6 @@ extern void appine_core_update_tabs(void);
 - (void)download:(WKDownload *)download didFailWithError:(NSError *)error expectedResumeData:(NSData *)resumeData API_AVAILABLE(macos(11.3)) {
     APPINE_LOG(@"[Appine] Download failed: %@", error.localizedDescription);
 }
-
-// ==========================================
-// 接收来自 JS 的 console.log
-// ==========================================
-- (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
-    if ([message.name isEqualToString:@"appineLog"]) {
-        APPINE_LOG(@"[Appine-JS] %@", message.body);
-    }
-    // 拦截 JS 发来的保存请求
-    else if ([message.name isEqualToString:@"appineSaveData"]) {
-        NSDictionary *body = message.body;
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-
-        if (body[@"ap_cfg"]) {
-            [defaults setObject:body[@"ap_cfg"] forKey:@"ap_cfg"];
-        }
-        if (body[@"ap_sess"]) {
-            [defaults setObject:body[@"ap_sess"] forKey:@"ap_sess"];
-        }
-
-        // 同步到磁盘
-        [defaults synchronize];
-        NSLog(@"[Appine-Plugin] ✅ 全局配置已保存到 NSUserDefaults");
-    }
-}
-
 
 #pragma mark - AppineBackend Protocol
 

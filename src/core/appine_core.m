@@ -3,8 +3,8 @@
  * Project: Appine (App in Emacs)
  * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -52,6 +52,8 @@ bool appine_core_check_signal(void) {
 extern id<AppineBackend> appine_create_web_backend(NSString *urlString);
 extern id<AppineBackend> appine_create_pdf_backend(NSString *path);
 extern id<AppineBackend> appine_create_quicklook_backend(NSString *path);
+extern id<AppineBackend> appine_create_rss_backend(NSString *path);
+
 static id<AppineBackend> appine_create_backend_for_file(NSString *path) {
     // 智能判断使用appine_create_quicklook_backend, appine_create_pdf_backend
     // 或者 appine_create_web_backend
@@ -119,6 +121,7 @@ static const CGFloat kAppineTabBarHeight = 28.0;
 @interface AppineTabItem : NSObject
 @property(nonatomic, assign) NSInteger tabId;
 @property(nonatomic, strong) id<AppineBackend> backend;
+@property(nonatomic, copy) NSString *originalPath;
 @end
 @implementation AppineTabItem
 @end
@@ -126,11 +129,11 @@ static const CGFloat kAppineTabBarHeight = 28.0;
 @interface AppineState : NSObject
 @property(nonatomic, weak) NSWindow *hostWindow;
 @property(nonatomic, strong) NSView *containerView;
-@property(nonatomic, strong) NSView *toolbarView;
+@property(nonatomic, strong) NSBox *toolbarView;
 @property(nonatomic, strong) NSStackView *toolbarStack;
-@property(nonatomic, strong) NSView *tabBarView;
+@property(nonatomic, strong) NSBox *tabBarView;
 @property(nonatomic, strong) NSSegmentedControl *tabControl;
-@property(nonatomic, strong) NSView *contentHostView;
+@property(nonatomic, strong) NSBox *contentHostView;
 @property(nonatomic, strong) NSView *inactiveOverlayView;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSMutableArray<AppineTabItem *> *tabs;
@@ -271,7 +274,9 @@ static void appine_apply_rect(void);
 static void appine_rebuild_tabs(void);
 static void appine_attach_active_view(void);
 static void appine_set_active(BOOL active);
-static void appine_add_tab(id<AppineBackend> backend);
+static void appine_add_tab(id<AppineBackend> backend, NSString *originalPath);
+static void appine_save_session(void);
+static void appine_restore_session_if_needed(void);
 
 #pragma mark - Core Magic Overlay
 
@@ -281,10 +286,10 @@ static void appine_add_tab(id<AppineBackend> backend);
 - (BOOL)isOpaque { return NO; }
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
-    // 微微变灰即可，0.35 有点影响阅读了。
-    [[NSColor colorWithCalibratedWhite:0.5 alpha:0.05] setFill];
+    // 自适应颜色的半透明遮罩
+    [[[NSColor windowBackgroundColor] colorWithAlphaComponent:0.05] setFill];
     NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
-    [[NSColor colorWithCalibratedWhite:0.5 alpha:0.3] setStroke];
+    [[NSColor separatorColor] setStroke]; // 边框也使用系统自适应分割线颜色
     NSBezierPath *path = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 0.5, 0.5)];
     [path setLineWidth:1.0];
     [path stroke];
@@ -393,7 +398,7 @@ static void appine_add_tab(id<AppineBackend> backend);
     // 发送给整个进程，让 Emacs 的主线程去捕获它
     kill(getpid(), SIGUSR1);
 }
-- (void)newTab:(id)sender { (void)sender; appine_add_tab(appine_create_web_backend(@"https://google.com")); }
+- (void)newTab:(id)sender { (void)sender; appine_add_tab(appine_create_web_backend(@"https://google.com"), @"https://google.com"); }
 - (void)closeTab:(id)sender { (void)sender; appine_core_close_active_tab(); }
 - (void)openFile:(id)sender {
     (void)sender;
@@ -405,9 +410,7 @@ static void appine_add_tab(id<AppineBackend> backend);
         NSString *path = panel.URL.path;
         id<AppineBackend> backend = appine_create_backend_for_file(path);
         if (backend) {
-            appine_add_tab(backend);
-            // 这一行可以去掉了。
-            // appine_restore_focus_if_active();
+          appine_add_tab(backend, path);
         }
     }
 }
@@ -580,8 +583,35 @@ static void appine_setup_global_event_monitor(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         // 同时监听 鼠标左键 和 键盘按下
-        NSEventMask mask = NSEventMaskLeftMouseDown | NSEventMaskKeyDown;
+        // NSEventMask mask = NSEventMaskLeftMouseDown | NSEventMaskKeyDown;
+        NSEventMask mask = NSEventMaskLeftMouseDown | NSEventMaskKeyDown | NSEventMaskMouseMoved;
         [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent * _Nullable(NSEvent * _Nonnull event) {
+
+            // ------------------------------------------------
+            // 拦截鼠标移动事件，用于恢复 Emacs 的边缘光标 (<->)
+            // ------------------------------------------------
+            if (event.type == NSEventTypeMouseMoved) {
+                AppineState *state = appine_state();
+                if (state.isActive && state.hostWindow && state.containerView) {
+                    NSPoint loc = [state.containerView convertPoint:event.locationInWindow fromView:nil];
+                    NSRect bounds = state.containerView.bounds;
+
+                    // 如果鼠标悬停在 Appine 的边缘区域
+                    if (loc.x <= 6.0 || loc.x >= bounds.size.width - 6.0 ||
+                        loc.y <= 4.0 || loc.y >= bounds.size.height - 4.0) {
+
+                        NSView *emacsView = appine_get_emacs_view();
+                        if (emacsView && [emacsView respondsToSelector:@selector(mouseMoved:)]) {
+                            // 强行抄送一份移动事件给 Emacs，触发 Emacs 内部的光标计算逻辑
+                            [emacsView mouseMoved:event];
+                        }
+                        // 吞噬掉这个事件,彻底切断 PDFView 等收到移动事件的途径，防止 <-> 闪烁
+                        return nil;
+                    }
+                }
+                return event; // 不在边缘时，正常返回事件
+            }
+
 
             // 调试：无条件打印所有键盘事件
             if (event.type == NSEventTypeKeyDown) {
@@ -738,6 +768,32 @@ static void appine_setup_global_event_monitor(void) {
     });
 }
 
+#pragma mark - Custom Container View
+
+@interface AppineContainerView : NSView
+@end
+
+@implementation AppineContainerView
+- (NSView *)hitTest:(NSPoint)point {
+    NSPoint localPoint = [self convertPoint:point fromView:self.superview];
+    NSRect bounds = self.bounds;
+
+    if (!NSPointInRect(localPoint, bounds)) {
+        return [super hitTest:point];
+    }
+
+    BOOL isEdge = (localPoint.x <= 6.0 || localPoint.x >= bounds.size.width - 6.0 ||
+                   localPoint.y <= 4.0 || localPoint.y >= bounds.size.height - 4.0);
+
+    if (isEdge) {
+        // 如果点击在边缘，打印日志并穿透
+        APPINE_LOG(@"[Appine Edge] hitTest edge detected at local: %@, returning nil to pass to Emacs", NSStringFromPoint(localPoint));
+        return nil;
+    }
+
+    return [super hitTest:point];
+}
+@end
 
 #pragma mark - UI Management
 
@@ -754,15 +810,14 @@ static void appine_ensure_container(void) {
     state.hostWindow = win;
     g_action_target = [[AppineActionTarget alloc] init];
 
-    state.containerView = [[NSView alloc] initWithFrame:state.targetRect];
+    state.containerView = [[AppineContainerView alloc] initWithFrame:state.targetRect];
     [win.contentView addSubview:state.containerView];
 
     if (@available(macOS 10.14, *)) {
         state.containerView.appearance = win.appearance;
     }
 
-    state.toolbarView = [[NSView alloc] init];
-    state.toolbarView.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin; // 允许宽度拉伸
+    state.toolbarView = appine_create_color_box(NSZeroRect, [NSColor controlBackgroundColor], NSViewWidthSizable | NSViewMinYMargin);
     state.toolbarStack = [NSStackView stackViewWithViews:@[]];
     state.toolbarStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     // TODO：这里可能还有点问题，排版还是都靠左边了，Active/Inactive 使用了坐标强制靠右。有空了再修复。
@@ -774,7 +829,7 @@ static void appine_ensure_container(void) {
     NSArray *leftSels = @[@"openFile:", @"newTab:", @"closeTab:"];
     for (NSUInteger i = 0; i < leftBtns.count; i++) {
         NSButton *btn = [NSButton buttonWithTitle:leftBtns[i] target:g_action_target action:NSSelectorFromString(leftSels[i])];
-        [btn setBezelStyle:NSBezelStyleTexturedRounded];
+        [btn setBezelStyle:NSBezelStyleRounded];
         [state.toolbarStack addArrangedSubview:btn];
     }
 
@@ -783,7 +838,7 @@ static void appine_ensure_container(void) {
     NSArray *rightSels = @[@"cut:", @"copy:", @"paste:", @"undo:", @"find:"];
     for (NSUInteger i = 0; i < rightBtns.count; i++) {
         NSButton *btn = [NSButton buttonWithTitle:rightBtns[i] target:g_action_target action:NSSelectorFromString(rightSels[i])];
-        [btn setBezelStyle:NSBezelStyleTexturedRounded];
+        [btn setBezelStyle:NSBezelStyleRounded];
         [state.toolbarStack addArrangedSubview:btn];
     }
 
@@ -795,17 +850,31 @@ static void appine_ensure_container(void) {
     state.statusLabel.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin | NSViewMaxYMargin;
     [state.toolbarView addSubview:state.statusLabel]; // 注意这里是 toolbarView
 
-    state.tabBarView = [[NSView alloc] init];
-    state.tabBarView.autoresizingMask = NSViewWidthSizable; // 允许宽度拉伸
+    state.tabBarView = appine_create_color_box(NSZeroRect, [NSColor windowBackgroundColor], NSViewWidthSizable);
     state.tabControl = [NSSegmentedControl segmentedControlWithLabels:@[] trackingMode:NSSegmentSwitchTrackingSelectOne target:g_action_target action:@selector(tabChanged:)];
     // 等宽分布
     if (@available(macOS 10.13, *)) {
         state.tabControl.segmentDistribution = NSSegmentDistributionFillEqually;
     }
+    if (@available(macOS 10.15, *)) {
+        state.tabControl.selectedSegmentBezelColor = [NSColor colorWithName:@"AppineTabColor" dynamicProvider:^NSColor * _Nonnull(NSAppearance * _Nonnull appearance) {
+            if ([appearance.name containsString:@"Dark"]) {
+                return [NSColor colorWithWhite:0.35 alpha:1.0]; // Dark 模式：0.35 的灰度，比底色亮，但不刺眼
+            } else {
+                return [NSColor whiteColor]; // Light 模式：纯白色，非常清晰
+            }
+        }];
+    } else if (@available(macOS 10.14, *)) {
+        state.tabControl.selectedSegmentBezelColor = [NSColor whiteColor]; // 降级处理
+    }
+    [[state.tabControl cell] setLineBreakMode:NSLineBreakByTruncatingTail];
+    state.tabControl.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
     [state.tabBarView addSubview:state.tabControl];
     [state.containerView addSubview:state.tabBarView];
 
-    state.contentHostView = [[NSView alloc] init];
+    state.contentHostView = [[NSBox alloc] init];
+    state.contentHostView.boxType = NSBoxCustom;
+    // state.contentHostView.borderType = NSLineBorder; // 开启边框，用于显示 Active 状态
     state.contentHostView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable; // 允许宽度拉伸
     [state.containerView addSubview:state.contentHostView];
 
@@ -814,6 +883,7 @@ static void appine_ensure_container(void) {
 
     appine_apply_rect();
     appine_apply_visual_state();
+    appine_restore_session_if_needed();
 }
 
 static void appine_apply_rect(void) {
@@ -828,7 +898,7 @@ static void appine_apply_rect(void) {
     CGFloat ch = MAX(0, bounds.size.height - th - tbh);
 
     [state.toolbarView setFrame:NSMakeRect(0, bounds.size.height - th, bounds.size.width, th)];
-    [state.toolbarStack setFrame:NSInsetRect(state.toolbarView.bounds, 6, 4)];
+    [state.toolbarStack setFrame:NSMakeRect(6, 4, bounds.size.width - 12, th - 8)];
 
     if (state.statusLabel) {
         [state.statusLabel sizeToFit];
@@ -838,7 +908,17 @@ static void appine_apply_rect(void) {
         [state.statusLabel setFrame:NSMakeRect(bounds.size.width - lblW - 12, (th - lblH) / 2.0, lblW, lblH)];
     }
     [state.tabBarView setFrame:NSMakeRect(0, ch, bounds.size.width, tbh)];
-    [state.tabControl setFrame:NSInsetRect(state.tabBarView.bounds, 6, 2)];
+    // NSBox 有内部 contentView 坐标偏移，必须用 tabBarView.frame 直接计算，而不是用 bounds
+    CGFloat tabControlWidth = bounds.size.width - 12;
+    [state.tabControl setFrame:NSMakeRect(6, 2, bounds.size.width - 12, tbh - 4)];
+    // 严格限制每个 Segment 的宽度，防止拖动时被内容撑开
+    if (state.tabs.count > 0) {
+        // 计算每个 tab 的绝对平均宽度
+        CGFloat segmentWidth = tabControlWidth / state.tabs.count;
+        for (NSInteger i = 0; i < (NSInteger)state.tabs.count; i++) {
+            [state.tabControl setWidth:segmentWidth forSegment:i];
+        }
+    }
     [state.contentHostView setFrame:NSMakeRect(0, 0, bounds.size.width, ch)];
     [state.inactiveOverlayView setFrame:bounds];
 }
@@ -847,23 +927,17 @@ static void appine_apply_visual_state(void) {
     AppineState *state = appine_state();
     BOOL active = state.isActive;
 
-    state.toolbarView.wantsLayer = YES;
-    state.toolbarView.layer.backgroundColor = [NSColor controlBackgroundColor].CGColor;
-
-    state.tabBarView.wantsLayer = YES;
-    state.tabBarView.layer.backgroundColor = [NSColor windowBackgroundColor].CGColor;
-
-    state.contentHostView.wantsLayer = YES;
-    state.contentHostView.layer.backgroundColor = [NSColor textBackgroundColor].CGColor;
-    state.contentHostView.layer.borderWidth = 2.0;
-    state.contentHostView.layer.borderColor = active ? [NSColor keyboardFocusIndicatorColor].CGColor : [NSColor separatorColor].CGColor;
+    state.contentHostView.fillColor = [NSColor textBackgroundColor];
+    state.contentHostView.borderWidth = 2.0;
+    state.contentHostView.borderColor = active ? [NSColor keyboardFocusIndicatorColor] : [NSColor separatorColor];
 
     state.inactiveOverlayView.hidden = active;
+    [state.inactiveOverlayView setNeedsDisplay:YES]; // 确保遮罩在状态切换时重绘
 
     // 根据 active 状态切换文字和颜色
     if (active) {
         state.statusLabel.stringValue = @"Active ☑️";
-        state.statusLabel.textColor = [NSColor controlTextColor]; // 激活时用深色/亮色
+        state.statusLabel.textColor = [NSColor labelColor]; // 激活时用深色/亮色
     } else {
         state.statusLabel.stringValue = @"Inactive 🔘";
         state.statusLabel.textColor = [NSColor secondaryLabelColor]; // 非激活时变灰
@@ -877,43 +951,164 @@ static void appine_apply_visual_state(void) {
     }
 }
 
+// 保存当前所有 Tab 的路径
+static void appine_save_session(void) {
+    AppineState *state = appine_state();
+    NSMutableArray *tabsData = [NSMutableArray array];
+    for (AppineTabItem *tab in state.tabs) {
+        NSString *pathToSave = tab.originalPath;
+
+        // 如果是 Web，尝试获取当前的真实 URL（解决 Google 搜索参数丢失问题）
+        if (tab.backend.kind == AppineBackendKindWeb) {
+            @try {
+                id webView = [(id)tab.backend valueForKey:@"webView"];
+                NSURL *url = [webView valueForKey:@"URL"];
+                if (url && url.absoluteString.length > 0) {
+                    pathToSave = url.absoluteString;
+                }
+            } @catch (NSException *e) {}
+        }
+
+        if (pathToSave) {
+            NSString *kindStr = @"unknown";
+            if (tab.backend.kind == AppineBackendKindWeb) kindStr = @"web";
+            else if (tab.backend.kind == AppineBackendKindPDF) kindStr = @"pdf";
+            else if (tab.backend.kind == AppineBackendKindQuickLook) kindStr = @"quicklook";
+            else if (tab.backend.kind == AppineBackendKindRss) kindStr = @"rss";
+
+            [tabsData addObject:@{@"path": pathToSave, @"kind": kindStr}];
+        }
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:tabsData forKey:@"AppineLastSessionTabsData"];
+}
+
+
+// 冷启动时恢复上次的 Tab
+static void appine_restore_session_if_needed(void) {
+    static BOOL hasRestored = NO;
+    if (hasRestored) return;
+    hasRestored = YES;
+
+    NSArray *savedItems = [[NSUserDefaults standardUserDefaults] arrayForKey:@"AppineLastSessionTabsData"];
+
+    if (savedItems && savedItems.count > 0) {
+        for (NSDictionary *item in savedItems) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+
+            NSString *savedPath = item[@"path"];
+            NSString *kind = item[@"kind"];
+            if (!savedPath) continue;
+
+            id<AppineBackend> backend = nil;
+            NSString *pathForBackend = savedPath;
+
+            if ([savedPath hasPrefix:@"file:"]) {
+                NSURL *url = [NSURL URLWithString:savedPath];
+                if (url && url.path) pathForBackend = url.path;
+            }
+
+            if ([kind isEqualToString:@"rss"]) {
+                backend = appine_create_rss_backend(pathForBackend);
+            } else if ([kind isEqualToString:@"quicklook"]) {
+                backend = appine_create_quicklook_backend(pathForBackend);
+            } else if ([kind isEqualToString:@"web"]) {
+                backend = appine_create_web_backend(savedPath);
+            } else if ([kind isEqualToString:@"pdf"]) {
+                backend = appine_create_pdf_backend(pathForBackend);
+            } else {
+                // 兜底
+                if ([savedPath hasPrefix:@"http://"] || [savedPath hasPrefix:@"https://"]) {
+                    backend = appine_create_web_backend(savedPath);
+                } else {
+                    backend = appine_create_backend_for_file(pathForBackend);
+                }
+            }
+
+            if (backend) appine_add_tab(backend, savedPath);
+        }
+    }
+}
+
 static void appine_rebuild_tabs(void) {
     AppineState *state = appine_state();
     if (!state.tabControl) return;
 
+    // 设置数量
     [state.tabControl setSegmentCount:state.tabs.count];
     NSInteger selectedIdx = -1;
 
+    // 设置标题
     for (NSInteger i = 0; i < (NSInteger)state.tabs.count; i++) {
         AppineTabItem *item = state.tabs[i];
 
-        // 获取标题并进行硬性长度截断（防止单个 Tab 时标题过长）
-        NSString *title = item.backend.title ?: @"Tab";
+        NSString *title = item.backend.title;
+        if (!title || title.length == 0) {
+            title = [item.originalPath lastPathComponent];
+        }
+        if (!title || title.length == 0) {
+            title = @"Loading...";
+        }
+
         const NSUInteger kMaxTitleLength = 30;
         if (title.length > kMaxTitleLength) {
             title = [[title substringToIndex:kMaxTitleLength - 1] stringByAppendingString:@"…"];
         }
-
         [state.tabControl setLabel:title forSegment:i];
         if (item.tabId == state.activeTabId) selectedIdx = i;
     }
 
     if (selectedIdx >= 0) [state.tabControl setSelectedSegment:selectedIdx];
+
+    // 在设置完内容后，再强制赋予 Frame。
+    // 这会触发 NSSegmentedControl 内部的重新计算逻辑，把宽度均分给刚刚创建的 Segments
+    if (state.containerView) {
+        NSRect tabFrame = state.tabControl.frame;
+        tabFrame.size.width = state.containerView.bounds.size.width - 12;
+        state.tabControl.frame = tabFrame;
+        if (state.tabs.count > 0) {
+            CGFloat segmentWidth = tabFrame.size.width / state.tabs.count;
+            for (NSInteger i = 0; i < (NSInteger)state.tabs.count; i++) {
+                [state.tabControl setWidth:segmentWidth forSegment:i];
+            }
+        }
+    }
+
+    // 强制要求系统在下一个 UI 周期立刻布局和重绘
+    [state.tabControl setNeedsLayout:YES];
+    [state.tabControl setNeedsDisplay:YES];
+
+    // 异步的强制重绘，防止首次加载空白
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [state.tabControl setNeedsLayout:YES];
+        [state.tabControl layoutSubtreeIfNeeded];
+        [state.tabControl setNeedsDisplay:YES];
+        [state.tabControl display];
+    });
+
+    appine_save_session();
 }
 
 static void appine_attach_active_view(void) {
     AppineState *state = appine_state();
     if (!state.contentHostView) return;
 
-    for (NSView *v in state.contentHostView.subviews) [v removeFromSuperview];
+    // NSBox 不能直接清空 subviews，必须操作它的 contentView
+    NSView *targetContainer = state.contentHostView.contentView;
+    if (!targetContainer) targetContainer = state.contentHostView; // 兜底防空
+
+    // 清空旧的视图
+    for (NSView *v in targetContainer.subviews) {
+        [v removeFromSuperview];
+    }
 
     AppineTabItem *active = appine_find_tab(state.activeTabId);
     if (active && active.backend.view) {
         NSView *v = active.backend.view;
-        [v setFrame:state.contentHostView.bounds];
+        [v setFrame:targetContainer.bounds];
         [v setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        [state.contentHostView addSubview:v];
+        [targetContainer addSubview:v]; // 添加到 contentView 中
     }
+
     appine_rebuild_tabs();
     // 保险：对齐焦点
     appine_restore_focus_if_active();
@@ -966,20 +1161,22 @@ static void appine_set_active(BOOL active) {
     }
 }
 
-static void appine_add_tab(id<AppineBackend> backend) {
+static void appine_add_tab(id<AppineBackend> backend, NSString *originalPath) {
     AppineState *state = appine_state();
     AppineTabItem *item = [[AppineTabItem alloc] init];
     item.tabId = state.nextTabId++;
     item.backend = backend;
+    item.originalPath = originalPath;
     [state.tabs addObject:item];
     state.activeTabId = item.tabId;
     appine_attach_active_view();
     appine_set_active(YES);
 }
+
 void appine_core_add_web_tab(NSString *urlString) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (urlString) {
-            appine_add_tab(appine_create_web_backend(urlString));
+          appine_add_tab(appine_create_web_backend(urlString), urlString);
         }
     });
 }
@@ -995,6 +1192,10 @@ int appine_core_open_web_in_rect(const char *url, int x, int y, int w, int h) {
 
         // 去除首尾空格
         NSString *urlString = [initialUrlString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        // 如果为空，说明 AppineLastSessionTabsData 有内容，不需要打开新的内容。
+        if (urlString.length == 0) {
+            return;
+        }
         NSURL *nsUrl = nil;
 
         // 【guess 1】：如果是绝对路径，直接转为 file:// 协议
@@ -1048,7 +1249,7 @@ int appine_core_open_web_in_rect(const char *url, int x, int y, int w, int h) {
         }
 
         if (backend) {
-            appine_add_tab(backend);
+          appine_add_tab(backend, urlString);
         }
     });
     return 0;
@@ -1063,7 +1264,7 @@ int appine_core_open_file_in_rect(const char *path, int x, int y, int w, int h) 
 
         id<AppineBackend> backend = appine_create_backend_for_file(filePath);
         if (backend) {
-            appine_add_tab(backend);
+          appine_add_tab(backend, filePath);
         }
     });
     return 0;
@@ -1285,6 +1486,28 @@ int appine_core_web_reload(void) {
             [active.backend performSelector:@selector(reload:) withObject:nil];
             #pragma clang diagnostic pop
             appine_restore_focus_if_active();
+        }
+    });
+    return 0;
+}
+
+// ===========================================================================
+// rss api
+// ===========================================================================
+int appine_core_open_rss_in_rect(const char *path, int x, int y, int w, int h) {
+    NSString *nsPath = path ? [NSString stringWithUTF8String:path] : nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // 1. 记录 Emacs 传过来的坐标和尺寸
+        appine_state().targetRect = NSMakeRect(x, y, w, h);
+
+        // 2. 确保底层容器被正确创建并挂载到 Emacs 窗口上
+        appine_ensure_container();
+
+        // 3. 创建并添加 RSS Backend
+        id<AppineBackend> backend = appine_create_rss_backend(nsPath);
+        if (backend) {
+          appine_add_tab(backend, nsPath);
+          appine_restore_focus_if_active();
         }
     });
     return 0;

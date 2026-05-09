@@ -3,8 +3,8 @@
  * Project: Appine (App in Emacs)
  * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -30,6 +30,8 @@ extern "C" {
 
 int appine_core_open_web_in_rect(const char *url, int x, int y, int width, int height);
 int appine_core_open_file_in_rect(const char *path, int x, int y, int width, int height);
+int appine_core_open_rss_in_rect(const char *path, int x, int y, int w, int h);
+  
 int appine_core_move_resize(int x, int y, int width, int height);
 int appine_core_close(void);
 
@@ -48,6 +50,7 @@ bool appine_core_check_signal(void);
 int appine_core_web_go_forward(void);
 int appine_core_web_go_back(void);
 int appine_core_web_reload(void);
+
 
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>

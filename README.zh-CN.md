@@ -9,14 +9,16 @@
 **Appine** 的名字源自 “App in Emacs”，它是一个 Emacs 插件，可以让你在 Emacs 中打开 MacOS 原生的浏览器、PDF 阅读器，还可以听音乐、看视频。无需离开 Emacs，即可享受 macOS 原生渲染、平滑滚动和硬件加速的全部威力！
 
 ## 最新更新
+### v0.1.0 版本更新
 
-v0.0.9 版本更新如下：
-1. 可以编辑 Pdf 了:) 添加了高亮、添加 note 和 undo 功能。
-2. 修复了有时候地址栏不显示的bug
-3. 添加了更加明显的 Active/Inactive 标识。
-4. 即使在 Inactive 的时候，变灰的时候也不会影响阅读了。
-5. 修复了关闭了 tab，视频仍在播放的问题。
+**✨ 新特性 (Features)**
+1. 增加了 Appine RSS 阅读器，现在可以读取 `elfeed.org` 来浏览你喜爱的 RSS 订阅了。
+2. PDF 阅读器增加了大纲 (Outline) 功能，并且支持自动恢复到上次阅读的位置。 (Resolves #14)
+3. 全面适配 macOS 的 Light 和 Dark 主题模式。 (Resolves #10)
 
+**🐛 修复与优化 (Fixes & Improvements)**
+4. 增强了会话管理：Emacs 重启后，会自动恢复上次打开的所有 Tab 页面。
+5. 修复了 Tab 栏在多标签或调整窗口大小时不正常缩放/溢出的问题。 (Fixes #8)
 
 
 ## ✨ 特性 (Features)
@@ -24,6 +26,7 @@ v0.0.9 版本更新如下：
 - **把它当作 Emacs 缓冲区来用**: 当 Appine 启动的时候，嵌入的窗口会绑定在 \*Appine Window\* 这个 Buffer 上。可以用 `C-x 1` 最大化，用 `C-x 0` 关闭，用 `C-x o` 在不同的 buffer 中切换。也可以使用 `C-n`, `C-p`, `C-v`, `M-v`, `M-<`, and `M->` 来对 Appine Window 进行滚屏操作。
 - **原生网页浏览**：在 Emacs 窗口中嵌入一个功能齐全的类似 Safari 的 WebKit 视图，而且支持 cookies。
 - **原生 PDF 渲染**：使用 macOS 内置的 PDFKit 查看 PDF，享受丝滑的滚动和缩放体验，而且可以方便地拷贝其中的内容到 Emacs 的其他 buffer。
+- **RSS 阅读器**: 告别简陋的纯文本，在 Emacs 中享受现代的 RSS UI 体验吧。
 - **原生 Word/Excel 渲染**：使用 macOS 内置的 Quartz 查看 Word/Excel 文件，同样支持丝滑的滚动和缩放。不过目前还不支持编辑。
 - **无缝集成**：当你分割或调整 Emacs 窗口大小时，原生视图会自动调整大小和移动。
 - **标签页管理**：支持多个嵌入的标签页，可以直接在 Emacs 中进行切换和关闭。
@@ -73,7 +76,7 @@ https://github.com/user-attachments/assets/f63eff4e-754e-4d4f-b11c-aa9d3f982c67
       `(("i" "Inbox" entry (file, (concat chaoswork/gtd-directory "inbox.org"))
          "* TODO %?\n%i\nfrom: %a\n/Entered on/ %U")
         ("c" "org-protocol-capture" entry (file ,(concat chaoswork/gtd-directory "inbox.org"))
-         "* TODO [[%:link][%:description]]\n\n %i" :immediate-finish t)))  
+         "* TODO [[%:link][%:description]]\n\n %i" :immediate-finish t)))
   ```
   这里的 org-protocal-capture 快捷键设置为 `c`，如果你喜欢其他键，可以在设置里修改。
 - Search：搜索选中内容，默认是 Google，可以自己配置别的修改引擎。
@@ -84,7 +87,7 @@ https://github.com/user-attachments/assets/f63eff4e-754e-4d4f-b11c-aa9d3f982c67
 
 <img width="1378" height="1052" alt="Image" src="https://github.com/user-attachments/assets/1a12af27-f18f-4a38-b992-f4873c038806" />
 
-为了快速打开网页上的链接，浏览器内置了一个简单的 link-hints 插件，可以类似 Vimium 那样，按 `f` 就可以标注出网页上链接，然后按相应的键就可以快速打开当前网页中的链接，或者按 `q` 退出 link-hints, 如下图： 
+为了快速打开网页上的链接，浏览器内置了一个简单的 link-hints 插件，可以类似 Vimium 那样，按 `f` 就可以标注出网页上链接，然后按相应的键就可以快速打开当前网页中的链接，或者按 `q` 退出 link-hints, 如下图：
 
 <img width="3024" height="1898" alt="Image" src="https://github.com/user-attachments/assets/2e86d223-0d5f-47a3-9e90-b3d3afa36c78" />
 
@@ -98,6 +101,38 @@ https://github.com/user-attachments/assets/f63eff4e-754e-4d4f-b11c-aa9d3f982c67
 一段打开 PDF 的视频地址
 
 https://github.com/user-attachments/assets/f2dd6c5a-eabb-421b-8d2c-986540f230f6
+
+### RSS 阅读器
+
+[emacs-elfeed/elfeed](https://github.com/emacs-elfeed/elfeed) 很好，但是我现在更喜欢 Appine RSS Reader 了。
+
+设置 `(setq appine-rss-path \"/your/path/elfeed.org\")` , 然后 `M-x appine-rss` 就可以现代的 RSS UI 体验。
+
+<img width="3024" height="1898" alt="Image" src="https://github.com/user-attachments/assets/576bc70d-50de-445e-8888-1caf82d3fce5" />
+
+elfeed.org 的格式如下，也可以参考 [remyhonig/elfeed-org](https://github.com/remyhonig/elfeed-org)：
+```
+* Feeds                                                              :elfeed:
+** Frontier & Deep Research                                     :ai:research:
+*** [[https://lilianweng.github.io/index.xml][Lil'Log]]
+*** [[https://www.dwarkeshpatel.com/feed][dwarkesh.com]]
+*** [[https://gwern.substack.com/feed][gwern.net]]
+*** [[https://geohot.github.io/blog/feed.xml][geohot.github.io]]
+*** [[https://garymarcus.substack.com/feed][garymarcus.substack.com]]
+** Build & Use AI                                                  :ai:build:
+*** [[https://simonwillison.net/atom/everything/][simonwillison.net]]
+*** [[https://www.geoffreylitt.com/feed.xml][geoffreylitt.com]]
+*** [[https://minimaxir.com/index.xml][minimaxir.com]]
+*** [[https://xeiaso.net/blog.rss][xeiaso.net]]
+** Engineering Perspective                                   :engineering:ai:
+*** [[http://antirez.com/rss][antirez.com]]
+*** [[https://lucumr.pocoo.org/feed.atom][lucumr.pocoo.org]]
+** Games
+*** [[https://store.steampowered.com/feeds/news/app/2868840/][Slay the Spire 2]]
+*** [[https://www.wowhead.com/news/rss/all][WoW Head]]
+
+```
+
 
 ### Org-mode 集成
 
@@ -133,14 +168,16 @@ https://github.com/user-attachments/assets/fd33d767-37dd-4027-adae-823b32228c7e
 ```elisp
 (use-package appine
   :straight (appine :type git :host github :repo "chaoswork/appine")
-  :defer t  
+  :defer t
   :custom
   ;; 在 org-mode 中使用 Appine 打开链接
   (appine-use-for-org-links t)
+  (appine-rss-path "~/.emacs.d/elfeed.org") ;; optional
   ;; 绑定你喜欢的前缀
   :bind (("C-x a a" . appine)
          ("C-x a u" . appine-open-url)
-         ("C-x a o" . appine-open-file)))         
+         ("C-x a o" . appine-open-file)
+         ("C-x a r" . appine-rss)))
 ```
 
 ### 方法 2：源码编译
@@ -163,7 +200,8 @@ https://github.com/user-attachments/assets/fd33d767-37dd-4027-adae-823b32228c7e
    (setq appine-use-for-org-links t)
    (global-set-key (kbd "C-x a a") 'appine)
    (global-set-key (kbd "C-x a u") 'appine-open-url)
-   (global-set-key (kbd "C-x a o") 'appine-open-file))
+   (global-set-key (kbd "C-x a o") 'appine-open-file)
+   (global-set-key (kbd "C-x a r") 'appine-rss)
 
    ```
 
@@ -177,17 +215,23 @@ Appine 使用 Emacs 动态模块来桥接 C/Objective-C 和 Emacs Lisp。
 
 ## ChangeLog
 
-- v0.0.9：
+- **v0.1.0**
+  1. 增加了 Appine RSS 阅读器，现在可以读取 `elfeed.org` 来浏览你喜爱的 RSS 订阅了。
+  2. PDF 阅读器增加了大纲 (Outline) 功能，并且支持自动恢复到上次阅读的位置。 (Resolves #14)
+  3. 全面适配 macOS 的 Light 和 Dark 主题模式。 (Resolves #10)
+  4. 增强了会话管理：Emacs 重启后，会自动恢复上次打开的所有 Tab 页面。
+  5. 修复了 Tab 栏在多标签或调整窗口大小时不正常缩放/溢出的问题。 (Fixes #8)
+- **v0.0.9**
   1. 可以编辑 Pdf 了:) 添加了高亮、添加 note 和 undo 功能。
   2. 修复了有时候地址栏不显示的bug
   3. 添加了更加明显的 Active/Inactive 标识。
   4. 即使在 Inactive 的时候，变灰的时候也不会影响阅读了。
   5. 修复了关闭了 tab，视频仍在播放的问题。
-- v0.0.8: 增加了 Selection Assistant 插件，可以将选中内容 Capture 网页到 inbox.org, 翻译，搜索，与 AI 对话。`appine-open-url` 现在更加智能了。
-- v0.0.7: 增加了浏览器插件功能，给浏览器和PDF阅读器添加了“查找”功能，并且支持插件自动更新。
-- v0.0.6: 可以像操纵普通 Buffer 那样操纵 Appine Window
-- v0.0.5: org-mode 集成。
-- v0.0.4 及之前: 完善浏览器、PDF 阅读器、Quick Look 功能。
+- **v0.0.8**: 增加了 Selection Assistant 插件，可以将选中内容 Capture 网页到 inbox.org, 翻译，搜索，与 AI 对话。`appine-open-url` 现在更加智能了。
+- **v0.0.7**: 增加了浏览器插件功能，给浏览器和PDF阅读器添加了“查找”功能，并且支持插件自动更新。
+- **v0.0.6**: 可以像操纵普通 Buffer 那样操纵 Appine Window
+- **v0.0.5**: org-mode 集成。
+- **v0.0.4** 及之前: 完善浏览器、PDF 阅读器、Quick Look 功能。
 
 ## 📄 许可证 (License)
 

@@ -2,10 +2,10 @@
 
 ;; Filename: appine.el
 ;; Description: Appine = App in Emacs. Embed native macOS apps inside Emacs.
-;; Author: Huang Chao <huangchao.cpp@gmail.com>
-;; Copyright (C) 2026, Huang Chao, all rights reserved.
+;; Author: Chao Huang <huangchao.cpp@gmail.com>
+;; Copyright (C) 2026, Chao Huang, all rights reserved.
 ;; Created: 2026-03-15 19:35:21
-;; Version: 0.0.9
+;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; URL: https://github.com/chaoswork/appine
 ;; Keywords: tools, multimedia, convenience, macos
@@ -57,7 +57,7 @@
 (require 'url)
 
 (defconst appine-github-repo "chaoswork/appine")
-(defconst appine-version "0.0.9") ;; 记得打 tag 以使用 github action
+(defconst appine-version "0.1.0") ;; 记得打 tag 以使用 github action
 
 ;;; ==========================================================================
 ;;; 加载模块
@@ -163,7 +163,7 @@
              (config-path (expand-file-name "ignore_version.json" config-dir))
              (trigger-update t)
              (current-time (float-time)))
-        
+
         ;; 2 & 3. 尝试读取配置文件
         (when (file-exists-p config-path)
           (let* ((json-object-type 'alist)
@@ -178,7 +178,7 @@
               ;; 判断最后询问日期是否不到一个月 (30天 = 2592000秒)
               (when (< (- current-time last-ask-date) 2592000)
                 (setq trigger-update nil))))) ;; 放弃更新逻辑
-        
+
         ;; 4. 触发更新逻辑
         (when trigger-update
           (if (y-or-n-p (concat (format "[Appine] New version (%s) found on GitHub. Update right now? " github-version)
@@ -190,19 +190,19 @@
                   ;; 先执行 git stash 暂存本地可能存在的修改
                   (message "[Appine] stash local modify (git stash)...")
                   (call-process "git" nil nil nil "stash")
-                  
+
                   ;; 然后执行 git pull
                   (message "[Appine] pull the newest code (git pull)...")
                   (if (= 0 (call-process "git" nil nil nil "pull" "origin" "master"))
                       (progn
                         (message "[Appine] Update successfully. Cleaning up old appine-module.dylib...")
-                        
+
                         ;; 1. 检查并删除 appine-module.dylib
                         (let ((dylib-file (expand-file-name "appine-module.dylib" appine-root-dir)))
                           (when (file-exists-p dylib-file)
                             (delete-file dylib-file)
                             (message "[Appine] old appine-module.dylib has been removed")))
-                        
+
                         ;; 2. 重新加载新版本的 appine.el
                         (message "[Appine] reload appine.el ...")
                         (load-file (expand-file-name "appine.el" appine-root-dir))
@@ -212,7 +212,7 @@
                         ;; 3. 标记更新成功，不再抛出 error
                         (setq updated t)
                         (message "[Appine] Appine has been successfully updated and reloaded."))
-                    
+
                     ;; ELSE 分支
                     (message "[Appine] Auto update failed! Please update manually."))))
 
@@ -232,7 +232,7 @@
     (let* ((module-file (expand-file-name "appine-module.dylib" appine-root-dir))
            (download-url (format "https://github.com/%s/releases/download/v%s/appine-module.dylib"
                                  appine-github-repo appine-version)))
-      
+
       ;; 1. 如果文件不存在，处理获取逻辑
       (unless (file-exists-p module-file)
         (if (y-or-n-p "[Appine] Would you like to download a precompiled module from GitHub?\n未找到本地模块，是否尝试从 GitHub 下载预编译版本?")
@@ -244,7 +244,7 @@
                 (appine--compile-module)))
           (message "[Appine] Skipping download and starting local compilation...")
           (appine--compile-module)))
-      
+
       ;; 2. 加载模块
       (if (file-exists-p module-file)
           (condition-case err
@@ -326,7 +326,7 @@ If it is less than 1.0, the Appine window will become smaller."
     ;; 绑定 C-c C-n 似乎会中断 find 的过程，导致无法按照预期工作
     ;; (define-key map (kbd "C-c C-n") #'appine-find-next)
     ;; (define-key map (kbd "C-c C-p") #'appine-find-prev)
-    
+
     ;; Appine-Window 也支持 Emacs 的常用编辑快捷键
     ;; Meta 键会被被中间某些环节捕获，传递不到 appine_core.m 的 monitor
     ;; 所以通过 perform action 的方式实现。
@@ -368,8 +368,8 @@ If it is less than 1.0, the Appine window will become smaller."
              (new (split-window base nil 'right)))
         (setq win new)
         (set-window-buffer new (appine--buffer))
-        (set-window-dedicated-p new nil)      
-        
+        (set-window-dedicated-p new nil)
+
         (with-current-buffer (appine--buffer)
           (setq-local mode-line-format nil)
           (setq-local header-line-format nil)
@@ -550,14 +550,25 @@ Open a file chooser in appine."
     (appine-native-action "findPrevious")
     (appine--set-active t)))
 
-
+(defun appine--has-saved-session-p ()
+  "Check if there is saved Appine tab data in macOS NSUserDefaults."
+  (let* ((bundle-id (string-trim (shell-command-to-string "osascript -e 'id of app \"Emacs\"' 2>/dev/null"))))
+    (if (string-empty-p bundle-id)
+        nil
+      (let* ((cmd (format "defaults read %s AppineLastSessionTabsData 2>/dev/null" bundle-id))
+             (out (string-trim (shell-command-to-string cmd))))
+        ;; Return true if data exists and is not an empty array "(\n)" or "()".
+        (and (not (string-empty-p out))
+             (not (string-match-p "does not exist" out))
+             (not (string-equal out "(\n)"))
+             (not (string-equal out "()")))))))
 
 ;;;###autoload
 (defun appine ()
   "Open the Appine window.
-If the `*Appine Window*` buffer already exists,display it in
-a right-hand split window; otherwise, split the window
-on the right and open the default usage.html help page."
+If the `*Appine Window*` buffer already exists, display it;
+Otherwise, restore the previous session if available.
+If no session exists, open the default usage.html help page."
   (interactive)
   (let* ((buf-exists (get-buffer appine--buffer-name))
          (usage-file (expand-file-name "docs/usage.html" appine-root-dir)))
@@ -565,7 +576,14 @@ on the right and open the default usage.html help page."
         (let ((win (appine--ensure-window)))
           (select-window win)
           (appine--set-active t))
-      (appine-open-file usage-file))))
+      ;; Buffer does not exist, indicating a cold start.
+      (if (appine--has-saved-session-p)
+          ;; 1. History exists: pass an empty string "".
+          ;; This triggers the underlying appine_ensure_container() to restore the session,
+          ;; but since the path is empty, it skips creating a new blank tab.
+          (appine-open-file "")
+        ;; 2. No history: open the default usage.html.
+        (appine-open-file usage-file)))))
 
 ;;;###autoload
 (defun appine-open-url (url)
@@ -582,9 +600,70 @@ on the right and open the default usage.html help page."
 (defun appine-open-file (path)
   "Split window on the right and open PATH in a new embedded native tab."
   (interactive "fFile: ")
-  ;; Elisp 只负责把相对路径或 ~ 展开为绝对路径，然后转成 file:// 协议传给统一入口
-  (let ((file-url (concat "file://" (expand-file-name path))))
+  ;; 如果 path 为空，直接传空字符串；否则展开为绝对路径并加上 file:// 前缀
+  (let ((file-url (if (string-empty-p path)
+                      ""
+                    (concat "file://" (expand-file-name path)))))
     (appine-open-url file-url))) ; 直接复用 appine-open-url
+
+(defcustom appine-rss-path nil
+  "Path to the data source for Appine RSS.
+This can be a single elfeed.org file, or a directory containing multiple
+elfeed.org format configuration files.
+If nil, `appine-rss` will prompt you for a path on its first run and
+save it to this variable for future use."
+  :type '(choice (const :tag "Not set" nil)
+                 (string :tag "File or Directory"))
+  :group 'appine)
+
+(defun appine-rss--load-path-from-custom-file ()
+  "Load only `appine-rss-path` from `custom-file` if it is currently unset.
+This avoids re-evaluating the entire custom file."
+  (when (and (null appine-rss-path)
+             (boundp 'custom-file)
+             (stringp custom-file)
+             (file-readable-p custom-file))
+    (with-temp-buffer
+      (insert-file-contents custom-file)
+      (goto-char (point-min))
+      ;; 在 custom-set-variables 块中查找 appine-rss-path 的值
+      (when (re-search-forward
+             "(appine-rss-path[[:space:]]+\\(\"[^\"]*\"\\))" nil t)
+        (let ((val (car (read-from-string (match-string 1)))))
+          (when (stringp val)
+            (setq appine-rss-path val)))))))
+
+;;;###autoload
+(defun appine-rss ()
+  "Open the Appine RSS Reader.
+The data source is determined by `appine-rss-path`. If it is not set,
+you will be prompted to select a single elfeed.org file or a directory
+containing multiple elfeed.org format files."
+  (interactive)
+
+  ;; Step 1: Try to recover the path from custom-file before prompting
+  (appine-rss--load-path-from-custom-file)
+
+  ;; Step 2: Still nil? Prompt the user and persist the choice
+  (unless appine-rss-path
+    (customize-save-variable
+     'appine-rss-path
+     (read-file-name
+      "Select a single elfeed.org file, or a directory containing such files: "))
+    (message
+     (concat
+      "[Appine RSS] Path saved to custom-file. "
+      "To set it manually in the future, use one of the following:\n"
+      "  • In your init.el:        (setq appine-rss-path \"/your/path\")\n"
+      "  • In use-package:         :custom (appine-rss-path \"/your/path\")\n"
+      "  Note: manual settings must be evaluated BEFORE calling `appine-rss`.")))
+
+  ;; Step 3: Open the RSS reader with the resolved path
+  (pcase-let* ((`(,x ,y ,w ,h) (appine--rect)))
+    (appine-native-open-rss-in-rect (expand-file-name appine-rss-path) x y w h)
+    (let ((win (appine--get-active-window-for-buffer appine--buffer-name)))
+      (when win (select-window win)))
+    (appine--set-active t)))
 
 (defun appine-close ()
   "Close all embedded native views and delete host window when possible."
@@ -597,21 +676,21 @@ on the right and open the default usage.html help page."
   (interactive)
   (let ((win (appine--get-active-window-for-buffer appine--buffer-name)))
     (when win (set-window-dedicated-p win nil))
-    
+
     (appine--set-active nil)
     (when (featurep 'appine-module)
       (ignore-errors (appine-native-unfocus))
       (ignore-errors (appine-native-close)))
-    
+
     (setq appine--active nil)
     (setq appine--active-map-enabled nil)
-    
+
     (when (get-buffer appine--buffer-name)
       (kill-buffer appine--buffer-name))
-    
+
     (when (and win (window-live-p win))
       (ignore-errors (delete-window win)))
-    
+
     (appine--update-active-keymap)))
 
 (add-hook 'window-size-change-functions
@@ -727,7 +806,7 @@ on the right and open the default usage.html help page."
             (let ((url (concat link-type ":" path)))
               (appine-open-url url))
             t) ;; 返回 t 表示已拦截处理
-           
+
            ;; 2. 处理文件链接
            ((equal link-type "file")
             ;; 如果是 org 文件，返回 nil 交给 org-mode 默认处理
@@ -736,7 +815,7 @@ on the right and open the default usage.html help page."
               ;; 否则使用 appine 打开文件
               (appine-open-file path)
               t)) ;; 返回 t 表示已拦截处理
-           
+
            ;; 3. 其他类型（如内部标题链接、id 链接等），返回 nil 交给 org-mode 默认处理
            (t nil)))))))
 

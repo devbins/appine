@@ -6,25 +6,28 @@ English | [简体中文](./README.zh-CN.md)
 ![OS: macOS](https://img.shields.io/badge/OS-macOS-lightgrey.svg)
 ![Emacs: 28.1+](https://img.shields.io/badge/Emacs-28.1+-purple.svg)
 
-**Appine** means "App in Emacs", which is an Emacs plugin using a Dynamic Module that allows you to embed native macOS views (WebKit, PDFKit, Quick look PreviewView, etc.) directly inside Emacs windows. 
+**Appine** means "App in Emacs", which is an Emacs plugin using a Dynamic Module that allows you to embed native macOS views (WebKit, PDFKit, Quick look PreviewView, etc.) directly inside Emacs windows.
 
 You can open a browser, read PDFs, listen to music, and watch videos in Emacs. Enjoy the full power of native macOS rendering, smooth scrolling, and hardware acceleration without leaving Emacs!
 
 ## Latest Updates
+### v0.1.0 Release
 
-**v0.0.9 Release Notes:**
-1. **Added PDF editing support :)** You can now highlight text, add notes, and undo actions.
-2. **Fixed a bug** where the address bar sometimes disappear.
-3. **Added clearer visual indicators** for Active/Inactive states.
-4. **Improved readability in Inactive mode:** The grayed-out state no longer interferes with reading.
-5. **Fixed an issue** where audio/video would continue playing after closing a tab.
+**✨ Features**
+1. Introduced the Appine RSS reader, allowing you to browse your favorite RSS feeds directly from your `elfeed.org` file.
+2. Added Outline support to the PDF reader, along with automatic restoration of your last read position. (Resolves #14)
+3. Full support for macOS Light and Dark themes. (Resolves #10)
 
+**🐛 Fixes & Improvements**
+4. Enhanced session management: Automatically restores all previously opened tabs after restarting Emacs.
+5. Fixed an issue where the tab bar would overflow or scale incorrectly when opening multiple tabs or resizing the window. (Fixes #8)
 
 ## ✨ Features
 
 - **Use It Like an Emacs Buffer**: When Appine starts, it opens an embedded Appine Window tied to an \*Appine Window\* buffer. You can maximize it with `C-x 1`, close it with `C-x 0`, and switch between buffers with `C-x o`. If you close it, you can reopen it with `C-x b` by switching to the *Appine Window* buffer. You can also scroll through the embedded Appine Window using `C-n`, `C-p`, `C-v`, `M-v`, `M-<`, and `M->`, just as you would in an Emacs buffer.
 - **Native Web Browsing**: Embed a fully functional Safari-like WebKit view inside an Emacs window, with full support for cookies.
 - **Native PDF Rendering**: View PDFs with macOS's built-in PDFKit for buttery-smooth scrolling and zooming, and easily copy content from it to other Emacs buffers.
+- **RSS Reader**: Say goodbye to basic plain text and embrace a modern RSS UI within Emacs.
 - **Native Word/Excel Rendering**: View Word/Excel files with macOS's built-in Quartz for buttery-smooth scrolling and zooming. Unfortunately, you cannot edit them yet.
 - **Seamless Integration**: The native views automatically resize and move when you split or adjust Emacs windows.
 - **Tab Management**: Support for multiple embedded tabs, switching, and closing directly from Emacs.
@@ -45,8 +48,8 @@ You can kill the Appine window completely with `M-x appine-kill`.
 ### Two States of Embedded Apps
 
 The embedded App has two states: Active and Inactive.
-- **Active State**: When the \*Appine Window\* buffer is active, it can be used just like a native Mac App. 
-- **Inactive State**: When the \*Appine Window\* buffer is not active, the embedded App is locked, grayed out, and cannot be interacted with. You can use Emacs normally at this time. 
+- **Active State**: When the \*Appine Window\* buffer is active, it can be used just like a native Mac App.
+- **Inactive State**: When the \*Appine Window\* buffer is not active, the embedded App is locked, grayed out, and cannot be interacted with. You can use Emacs normally at this time.
 
 A video demonstrating the two states.
 
@@ -107,6 +110,38 @@ A video demonstrating Open PDF.
 
 https://github.com/user-attachments/assets/f2dd6c5a-eabb-421b-8d2c-986540f230f6
 
+### RSS Reader
+
+[emacs-elfeed/elfeed](https://github.com/emacs-elfeed/elfeed) is great, but I now prefer the Appine RSS Reader.
+
+Simply set `(setq appine-rss-path "/your/path/elfeed.org")`, and then run `M-x appine-rss` to enjoy a modern RSS UI experience.
+
+<img width="3024" height="1898" alt="Image" src="https://github.com/user-attachments/assets/576bc70d-50de-445e-8888-1caf82d3fce5" />
+
+The format of `elfeed.org` is as follows. You can also refer to [remyhonig/elfeed-org](https://github.com/remyhonig/elfeed-org):
+```
+* Feeds                                                              :elfeed:
+** Frontier & Deep Research                                     :ai:research:
+*** [[https://lilianweng.github.io/index.xml][Lil'Log]]
+*** [[https://www.dwarkeshpatel.com/feed][dwarkesh.com]]
+*** [[https://gwern.substack.com/feed][gwern.net]]
+*** [[https://geohot.github.io/blog/feed.xml][geohot.github.io]]
+*** [[https://garymarcus.substack.com/feed][garymarcus.substack.com]]
+** Build & Use AI                                                  :ai:build:
+*** [[https://simonwillison.net/atom/everything/][simonwillison.net]]
+*** [[https://www.geoffreylitt.com/feed.xml][geoffreylitt.com]]
+*** [[https://minimaxir.com/index.xml][minimaxir.com]]
+*** [[https://xeiaso.net/blog.rss][xeiaso.net]]
+** Engineering Perspective                                   :engineering:ai:
+*** [[http://antirez.com/rss][antirez.com]]
+*** [[https://lucumr.pocoo.org/feed.atom][lucumr.pocoo.org]]
+** Games
+*** [[https://store.steampowered.com/feeds/news/app/2868840/][Slay the Spire 2]]
+*** [[https://www.wowhead.com/news/rss/all][WoW Head]]
+
+```
+
+
 ### Org-mode Integration
 
 Setting `(setq appine-use-for-org-links t)` enables opening URLs and files with Appine. You can toggle this feature on or off by running `M-x appine-toggle-use-for-org-links`.
@@ -115,7 +150,7 @@ TODO: Add a video demonstrating Org-mode integration.
 
 ### Toolbar
 
-The Toolbar implements common App operations such as New Tab, Open File, etc., and also includes editing operations like Cut/Copy/Paste. 
+The Toolbar implements common App operations such as New Tab, Open File, etc., and also includes editing operations like Cut/Copy/Paste.
 Since Appine introduces the macOS Quick Look Preview module, most common files can be previewed. You can open files through the Open File button in the Appine window.
 
 Copy/Paste video
@@ -141,14 +176,16 @@ The easiest way to install Appine is using `use-package` with `straight.el` or `
 ```elisp
 (use-package appine
   :straight (appine :type git :host github :repo "chaoswork/appine")
-  :defer t  
+  :defer t
   :custom
   ;; enables opening URLs and files with Appine, default is nil
   (appine-use-for-org-links t)
+  (appine-rss-path "~/.emacs.d/elfeed.org") ;; optional
   ;; bind any prefix you like
   :bind (("C-x a a" . appine)
          ("C-x a u" . appine-open-url)
-         ("C-x a o" . appine-open-file)))
+         ("C-x a o" . appine-open-file)
+         ("C-x a r" . appine-rss)))         
 ```
 
 ### Method 2: Build from Source
@@ -171,18 +208,26 @@ If you prefer to build the module yourself, you need the Xcode Command Line Tool
    (setq appine-use-for-org-links t)
    (global-set-key (kbd "C-x a a") 'appine)
    (global-set-key (kbd "C-x a u") 'appine-open-url)
-   (global-set-key (kbd "C-x a o") 'appine-open-file))
+   (global-set-key (kbd "C-x a o") 'appine-open-file)
+   (global-set-key (kbd "C-x a r") 'appine-rss)   
    ```
 
 ## 🛠️ Continuous Improvement
 
-Appine uses Emacs Dynamic Modules to bridge C/Objective-C and Emacs Lisp. 
+Appine uses Emacs Dynamic Modules to bridge C/Objective-C and Emacs Lisp.
 
 The project is still under continuous improvement. If you encounter any problems, feel free to open an issue.
 
 Support for Windows and Linux systems will be considered in the future. The main reason is that I currently don't have a Windows computer, and the Linux distribution I use doesn't have a GUI, which makes it impossible for me to debug the plugin at present. Moreover, unlike macOS, Windows and Linux lack native system-level rendering frameworks for web pages, PDFs, and Office files, requiring third-party libraries to implement, which often introduces instability. Cross-platform libraries like Qt are often too massive and too heavy for a small Emacs plugin. If you use Linux or Windows and really want to use browsers, PDFs, and other apps in Emacs, you can try the [EAF](https://github.com/emacs-eaf/emacs-application-framework) project.
 
 ## ChangeLog
+
+- **v0.1.0**
+  1. Introduced the Appine RSS reader, allowing you to browse your favorite RSS feeds directly from your `elfeed.org` file.
+  2. Added Outline support to the PDF reader, along with automatic restoration of your last read position. (Resolves #14)
+  3. Full support for macOS Light and Dark themes. (Resolves #10)
+  4. Enhanced session management: Automatically restores all previously opened tabs after restarting Emacs.
+  5. Fixed an issue where the tab bar would overflow or scale incorrectly when opening multiple tabs or resizing the window. (Fixes #8)
 
 - **v0.0.9:**
   1. **Added PDF editing support :)** You can now highlight text, add notes, and undo actions.

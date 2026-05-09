@@ -9,8 +9,9 @@ When Appine starts, it opens an embedded Appine Window tied to an \*Appine Windo
 - `appine`: Open Appine Window and show the usage.
 - `appine-open-url`: Open a URL in a new web tab.
 - `appine-open-file`: Open a local file (PDF, Word, etc.) in a new tab.
+- `appine-rss`: Open Appine RSS Reader in a new tab. The data source is determined by `appine-rss-path`. If it is not set, you will be prompted to select a single elfeed.org file or a directory containing multiple elfeed.org format files.
 - `appine-next-tab` / `appine-prev-tab`: Switch between tabs.
-- `appine-close-tab`: Close the current tab.
+- `appine-close-tab`: Close the current tab. 
 - `appine-close`: Close Appine. This only closes the embedded view; the \*Appine Buffer\* remains in the background. You can reopen the \*Appine Buffer\* at any time to restore the view.
 - `appine-kill`: kill the Appine window completely.
 
@@ -44,10 +45,14 @@ To facilitate daily browser operations, Appine\'s browser comes with a built-in 
   You need to configure `org-capture-template`. An example is as follows:
   ````
   (setq org-capture-templates
-      `(("i" "Inbox" entry (file, (concat chaoswork/gtd-directory "inbox.org"))
+      `(("i" "Inbox" entry
+         (file ,(concat chaoswork/gtd-directory "inbox.org"))
          "* TODO %?\n%i\nfrom: %a\n/Entered on/ %U")
-        ("c" "org-protocol-capture" entry (file ,(concat chaoswork/gtd-directory "inbox.org"))
-         "* TODO [[%:link][%:description]]\n\n %i" :immediate-finish t)))
+        
+        ("c" "org-protocol-capture" entry
+         (file ,(concat chaoswork/gtd-directory "inbox.org"))
+         "* TODO [[%:link][%:description]]\n\n %i"
+         :immediate-finish t)))
   ````
   The shortcut key for `org-protocol-capture` here is set to `c`. If you prefer a different key, you can modify it in the settings.
 

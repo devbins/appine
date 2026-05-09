@@ -3,8 +3,8 @@
  * Project: Appine (App in Emacs)
  * Description: Emacs dynamic module to embed native macOS views
  *              (WebKit, PDFKit, Quick Look, etc.) directly inside Emacs windows.
- * Author: Huang Chao <huangchao.cpp@gmail.com>
- * Copyright (C) 2026, Huang Chao, all rights reserved.
+ * Author: Chao Huang <huangchao.cpp@gmail.com>
+ * Copyright (C) 2026, Chao Huang, all rights reserved.
  * URL: https://github.com/chaoswork/appine
  *
  * This program is free software: you can redistribute it and/or modify
@@ -91,6 +91,20 @@ static emacs_value Fappine_open_file_in_rect(emacs_env *env, ptrdiff_t nargs, em
     return env->intern(env, "t");
 }
 
+static emacs_value Fappine_open_rss_in_rect(emacs_env *env, ptrdiff_t nargs, emacs_value *args, void *data) {
+    char *path = copy_emacs_string(env, args[0]);
+    if (!path) return env->intern(env, "nil");
+
+    int x = get_emacs_int(env, args[1]);
+    int y = get_emacs_int(env, args[2]);
+    int w = get_emacs_int(env, args[3]);
+    int h = get_emacs_int(env, args[4]);
+
+    appine_core_open_rss_in_rect(path, x, y, w, h);
+    free(path);
+    return env->intern(env, "t");
+}
+
 static emacs_value Fappine_move_resize(emacs_env *env, ptrdiff_t nargs, emacs_value *args, void *data) {
     int x = get_emacs_int(env, args[0]);
     int y = get_emacs_int(env, args[1]);
@@ -145,8 +159,11 @@ int emacs_module_init(struct emacs_runtime *runtime) {
                   "Open URL in embedded rect as a new tab.");
     bind_function(env, "appine-native-open-file-in-rect", 5, 5, Fappine_open_file_in_rect,
                   "Open File in embedded rect as a new tab.");
+    bind_function(env, "appine-native-open-rss-in-rect", 5, 5, Fappine_open_rss_in_rect,
+                  "open rss");
     bind_function(env, "appine-native-move-resize", 4, 4, Fappine_move_resize,
                   "Move/resize embedded native view.");
+
     bind_function(env, "appine-native-close-active-tab", 0, 0, Fappine_close_active_tab,
                   "Close active embedded tab.");
     bind_function(env, "appine-native-select-next-tab", 0, 0, Fappine_select_next_tab,
@@ -171,6 +188,7 @@ int emacs_module_init(struct emacs_runtime *runtime) {
                   "Perform a named native action.");
     bind_function(env, "appine-native-close", 0, 0, Fappine_close,
                   "Close embedded native view.");
+
     bind_function(env, "appine-set-debug-log", 1, 1, Fappine_set_debug_log,
               "Enable or disable native debug logging.");
     bind_function(env, "appine-check-signal", 0, 0, Fappine_check_signal,

@@ -49,7 +49,8 @@ LDFLAGS = -dynamiclib \
           -framework Cocoa \
           -framework WebKit \
           -framework Quartz \
-          -framework UniformTypeIdentifiers
+          -framework UniformTypeIdentifiers \
+          -lsqlite3
 
 TARGET = appine-module.dylib
 
@@ -62,7 +63,9 @@ ARCH_FLAGS = -arch x86_64 -arch arm64
 SRCS = $(SRC_CORE_DIR)/module.c \
        $(SRC_CORE_DIR)/appine_core.m \
        $(SRC_BACKEND_DIR)/backend_web.m \
+       $(SRC_BACKEND_DIR)/backend_web_utils.m \
        $(SRC_BACKEND_DIR)/backend_pdf.m \
+       $(SRC_BACKEND_DIR)/backend_rss.m \
        $(SRC_BACKEND_DIR)/backend_quicklook.m
 
 # ---------------------------------------------------------------------------

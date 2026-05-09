@@ -66,6 +66,10 @@ Emacs buffer.</p>
 <li><code>appine-open-url</code>: Open a URL in a new web tab.</li>
 <li><code>appine-open-file</code>: Open a local file (PDF, Word, etc.)
 in a new tab.</li>
+<li><code>appine-rss</code>: Open Appine RSS Reader in a new tab. The
+data source is determined by <code>appine-rss-path</code>. If it is not
+set, you will be prompted to select a single elfeed.org file or a
+directory containing multiple elfeed.org format files.</li>
 <li><code>appine-next-tab</code> / <code>appine-prev-tab</code>: Switch
 between tabs.</li>
 <li><code>appine-close-tab</code>: Close the current tab.</li>
@@ -105,10 +109,14 @@ with the webpage link into your <code>inbox.org</code>.</p>
 <p>You need to configure <code>org-capture-template</code>. An example
 is as follows:</p>
 <pre><code>(setq org-capture-templates
-    `((&quot;i&quot; &quot;Inbox&quot; entry (file, (concat chaoswork/gtd-directory &quot;inbox.org&quot;))
+    `((&quot;i&quot; &quot;Inbox&quot; entry
+       (file ,(concat chaoswork/gtd-directory &quot;inbox.org&quot;))
        &quot;* TODO %?\n%i\nfrom: %a\n/Entered on/ %U&quot;)
-      (&quot;c&quot; &quot;org-protocol-capture&quot; entry (file ,(concat chaoswork/gtd-directory &quot;inbox.org&quot;))
-       &quot;* TODO [[%:link][%:description]]\n\n %i&quot; :immediate-finish t)))</code></pre>
+
+      (&quot;c&quot; &quot;org-protocol-capture&quot; entry
+       (file ,(concat chaoswork/gtd-directory &quot;inbox.org&quot;))
+       &quot;* TODO [[%:link][%:description]]\n\n %i&quot;
+       :immediate-finish t)))</code></pre>
 <p>The shortcut key for <code>org-protocol-capture</code> here is set to
 <code>c</code>. If you prefer a different key, you can modify it in the
 settings.</p></li>
