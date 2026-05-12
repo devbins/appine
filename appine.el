@@ -600,11 +600,50 @@ If no session exists, open the default usage.html help page."
 (defun appine-open-file (path)
   "Split window on the right and open PATH in a new embedded native tab."
   (interactive "fFile: ")
+
+  ;; 文件存在且不是目录
+  (when (and (file-exists-p path) (file-regular-p path))
+    (setq file-path (expand-file-name path))
+    (when (featurep 'recentf)
+      (recentf-add-file file-path)))
+
   ;; 如果 path 为空，直接传空字符串；否则展开为绝对路径并加上 file:// 前缀
   (let ((file-url (if (string-empty-p path)
                       ""
                     (concat "file://" (expand-file-name path)))))
     (appine-open-url file-url))) ; 直接复用 appine-open-url
+
+;;;###autoload
+(defun appine-open-file-from-recentf ()
+  "Open file from recentf list"
+  (interactive)
+  (if (and (featurep 'recentf)
+           (boundp 'recentf-list)
+           recentf-list)
+      (when-let ((file
+                  (cond
+                   ((featurep 'consult)
+                    (consult--read recentf-list
+                                   :prompt "Recent file: "
+                                   :sort nil
+                                   :history 'file-name-history
+                                   :category 'file
+                                   :require-match t))
+                   ((featurep 'ivy)
+                    (ivy-read "Recent file: " recentf-list
+                              :sort nil
+                              :history 'file-name-history
+                              :require-match t))
+                   ((featurep 'helm)
+                    (helm-comp-read "Recent file: " recentf-list
+                                    :history 'file-name-history
+                                    :must-match t))
+                   (t
+                    (completing-read "Recent file: "
+                                     (mapcar #'abbreviate-file-name recentf-list)
+                                     nil t nil 'file-name-history)))))
+        (appine-open-file file))
+    (call-interactively 'appine-open-file)))
 
 (defcustom appine-rss-path nil
   "Path to the data source for Appine RSS.
